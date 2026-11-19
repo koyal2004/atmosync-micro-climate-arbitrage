@@ -1,0 +1,80 @@
+"""
+AtmoSync - Configuration & Application Settings
+Intelligent Climate Monitoring & Agricultural Market Arbitrage
+"""
+
+import os
+from pathlib import Path
+
+# Base Paths
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+GENERATED_DATA_DIR = DATA_DIR / "generated"
+EXPORTS_DIR = DATA_DIR / "exports"
+DATABASE_DIR = BASE_DIR / "database"
+DB_PATH = DATABASE_DIR / "atmosync.db"
+ASSETS_DIR = BASE_DIR / "assets"
+
+# Ensure directories exist
+GENERATED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_DIR.mkdir(parents=True, exist_ok=True)
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Application Branding
+APP_NAME = "AtmoSync"
+APP_SUBTITLE = "Micro-Climate Arbitrage Analytics"
+TAGLINE = "Intelligent Climate Monitoring & Agricultural Market Arbitrage"
+APP_VERSION = "2.4.0 (Enterprise Academic Edition)"
+ORGANIZATION = "Infotact Advanced Data Analytics & Engineering"
+
+# Data Generation Configuration
+DEFAULT_RANDOM_SEED = 42
+DEFAULT_TOTAL_RECORDS = 10000
+MIN_TOTAL_RECORDS = 5000
+MAX_TOTAL_RECORDS = 10000
+
+# Distribution of records for Default ~10,000 total:
+RECORD_DISTRIBUTION_10K = {
+    "commodities": 1000,
+    "markets": 500,
+    "market_prices": 3000,
+    "shipments": 1000,
+    "sensor_readings": 4000,
+    "arbitrage_opportunities": 500
+}
+
+# Distribution of records for Minimum ~5,000 total:
+RECORD_DISTRIBUTION_5K = {
+    "commodities": 500,
+    "markets": 250,
+    "market_prices": 1600,
+    "shipments": 600,
+    "sensor_readings": 2000,
+    "arbitrage_opportunities": 250
+}
+
+# Color Palette (Bloomberg / Enterprise SaaS Theme)
+COLORS = {
+    "primary": "#10243A",       # Deep Navy
+    "secondary": "#12B8A6",     # Teal
+    "background": "#F4F7FA",    # Light Grey
+    "card": "#FFFFFF",          # Pure White
+    "text": "#0F172A",          # Dark Slate
+    "text_muted": "#64748B",    # Muted Slate
+    "border": "#E2E8F0",        # Border Light
+    "success": "#16A34A",       # Forest Green
+    "warning": "#F59E0B",       # Amber
+    "critical": "#DC2626",      # Crimson Red
+    "info": "#2563EB",          # Royal Blue
+    "accent": "#0D9488",        # Dark Teal
+}
+
+# Persistent Synthetic Data Disclaimer
+PERSISTENT_DISCLAIMER = (
+    "AtmoSync is an academic demonstration platform using synthetic agricultural market, "
+    "shipment, and IoT sensor data. All prices, shipment records, sensor observations, "
+    "risk scores, and arbitrage opportunities are simulated and must not be interpreted "
+    "as actual market conditions or trading recommendations."
+)
+DATASET_LABEL = "SYNTHETIC DEMONSTRATION DATA (INFOTACT RESEARCH LAB)"

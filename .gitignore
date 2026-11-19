@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AtmoSync Local SQLite Database & Generated Exports
+*.db
+*.db-journal
+database/*.db
+data/exports/*
+!data/exports/.gitkeep
+data/generated/*
+!data/generated/.gitkeep

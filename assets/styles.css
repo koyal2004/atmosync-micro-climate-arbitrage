@@ -1,0 +1,126 @@
+/* AtmoSync - Enterprise SaaS Theme CSS */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #0F172A;
+    background-color: #F8FAFC;
+}
+
+/* Custom Streamlit Header & Sidebar tweaks */
+.stApp {
+    background-color: #F8FAFC;
+}
+
+header[data-testid="stHeader"] {
+    background-color: rgba(255, 255, 255, 0.95);
+    border-bottom: 1px solid #E2E8F0;
+}
+
+/* Sidebar styling */
+section[data-testid="stSidebar"] {
+    background-color: #10243A !important;
+    border-right: 1px solid #1E3A5F;
+}
+
+section[data-testid="stSidebar"] .stMarkdown, 
+section[data-testid="stSidebar"] p, 
+section[data-testid="stSidebar"] span, 
+section[data-testid="stSidebar"] label {
+    color: #E2E8F0 !important;
+}
+
+section[data-testid="stSidebar"] hr {
+    border-color: #1E3A5F !important;
+}
+
+/* Nav links in sidebar */
+section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] a {
+    border-radius: 8px;
+    margin-bottom: 3px;
+    font-weight: 500;
+    color: #CBD5E1 !important;
+    transition: all 0.2s ease;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] a:hover {
+    background-color: rgba(18, 184, 166, 0.15) !important;
+    color: #FFFFFF !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] a[aria-current="page"] {
+    background-color: #12B8A6 !important;
+    color: #FFFFFF !important;
+    font-weight: 700;
+}
+
+/* Page titles */
+h1 {
+    font-weight: 800 !important;
+    color: #10243A !important;
+    letter-spacing: -0.7px !important;
+}
+
+h2, h3, h4 {
+    font-weight: 700 !important;
+    color: #1E293B !important;
+    letter-spacing: -0.4px !important;
+}
+
+/* Persistent Synthetic Banner */
+.disclaimer-banner {
+    background: linear-gradient(90deg, #10243A 0%, #1E3A8A 100%);
+    border-left: 5px solid #12B8A6;
+    color: #FFFFFF;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+    line-height: 1.4;
+}
+
+.disclaimer-banner strong {
+    color: #2DD4BF;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Clean Cards */
+.metric-container {
+    background: #FFFFFF;
+    border-radius: 10px;
+    padding: 16px;
+    border: 1px solid #E2E8F0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+/* Dataframe Styling */
+.stDataFrame {
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #E2E8F0;
+}
+
+/* Buttons */
+.stButton>button {
+    border-radius: 6px;
+    font-weight: 600;
+    border: none;
+    transition: all 0.2s ease-in-out;
+}
+
+.stButton>button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+/* Status Badges */
+.badge-pill {
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    display: inline-block;
+    letter-spacing: 0.3px;
+}
