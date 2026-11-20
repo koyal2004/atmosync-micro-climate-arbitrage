@@ -1,11 +1,171 @@
 """
 AtmoSync - Data Cleaning & Validation Suite
 Audits referential integrity, schema constraints, range violations,
-null values, duplicate keys, and generates an enterprise audit report.
+null values, duplicate keys, and preprocesses/cleans synthetic datasets.
 """
 
+import logging
+from typing import Dict, Any, List, Optional, Tuple
+import numpy as np
 import pandas as pd
-from typing import Dict, Any, List
+
+logger = logging.getLogger("atmosync.data_cleaning")
+
+def clean_dataset(
+    table_name: str,
+    df: pd.DataFrame,
+    reference_data: Optional[Dict[str, pd.DataFrame]] = None
+) -> pd.DataFrame:
+    """
+    Preprocess and clean a single dataset table.
+    Enforces non-null primary keys, removes duplicate IDs, corrects range anomalies,
+    and applies synthetic provenance labels.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    cleaned = df.copy()
+
+    # 1. Deduplicate by primary key
+    pk_map = {
+        "commodities": "commodity_id",
+        "markets": "market_id",
+        "market_prices": "price_id",
+        "shipments": "shipment_id",
+        "sensor_readings": "sensor_id",
+        "arbitrage_opportunities": "opportunity_id",
+        "alerts": "alert_id"
+    }
+    pk = pk_map.get(table_name)
+    if pk and pk in cleaned.columns:
+        # Drop rows where primary key is null
+        cleaned = cleaned.dropna(subset=[pk])
+        # Drop duplicate primary keys, keeping first
+        cleaned = cleaned.drop_duplicates(subset=[pk], keep="first")
+
+    # 2. Table-specific domain rules and validations
+    if table_name == "commodities":
+        # Ensure positive prices and valid temperature/humidity bounds
+        cleaned["base_price_per_kg"] = cleaned["base_price_per_kg"].apply(lambda x: max(1.0, float(x)))
+        cleaned["optimal_temperature"] = cleaned["optimal_temperature"].astype(float)
+        cleaned["minimum_temperature"] = cleaned["minimum_temperature"].astype(float)
+        cleaned["maximum_temperature"] = cleaned["maximum_temperature"].astype(float)
+        # Ensure min <= opt <= max
+        cleaned["minimum_temperature"] = np.minimum(cleaned["minimum_temperature"], cleaned["optimal_temperature"])
+        cleaned["maximum_temperature"] = np.maximum(cleaned["maximum_temperature"], cleaned["optimal_temperature"])
+        cleaned["optimal_humidity"] = cleaned["optimal_humidity"].clip(10.0, 99.0)
+        cleaned["maximum_humidity"] = np.maximum(cleaned["maximum_humidity"], cleaned["optimal_humidity"]).clip(10.0, 100.0)
+        cleaned["estimated_shelf_life_days"] = cleaned["estimated_shelf_life_days"].apply(lambda x: max(1, int(x)))
+
+    elif table_name == "markets":
+        # Validate coordinates
+        cleaned["latitude"] = cleaned["latitude"].clip(-90.0, 90.0)
+        cleaned["longitude"] = cleaned["longitude"].clip(-180.0, 180.0)
+        cleaned["estimated_daily_capacity"] = cleaned["estimated_daily_capacity"].apply(lambda x: max(100, int(x)))
+
+    elif table_name == "market_prices":
+        # Strict invariant: minimum_price <= modal_price <= maximum_price
+        cleaned["modal_price"] = cleaned["modal_price"].apply(lambda x: max(1.0, float(x)))
+        cleaned["minimum_price"] = cleaned["minimum_price"].apply(lambda x: max(0.5, float(x)))
+        cleaned["maximum_price"] = cleaned["maximum_price"].apply(lambda x: max(1.0, float(x)))
+
+        # Fix any min_price > modal_price or max_price < modal_price
+        cleaned["minimum_price"] = np.minimum(cleaned["minimum_price"], cleaned["modal_price"])
+        cleaned["maximum_price"] = np.maximum(cleaned["maximum_price"], cleaned["modal_price"])
+
+        # Ensure minimum is strictly less than or equal to maximum
+        mask_equal = cleaned["minimum_price"] >= cleaned["maximum_price"]
+        cleaned.loc[mask_equal, "maximum_price"] = cleaned.loc[mask_equal, "minimum_price"] + 1.0
+
+        cleaned["arrival_quantity"] = cleaned["arrival_quantity"].apply(lambda x: max(0.0, float(x)))
+        cleaned["demand_index"] = cleaned["demand_index"].clip(20.0, 200.0)
+        cleaned["supply_index"] = cleaned["supply_index"].clip(20.0, 200.0)
+
+        # Referential filtering if reference data is provided
+        if reference_data:
+            comm_ids = set(reference_data.get("commodities", pd.DataFrame()).get("commodity_id", []))
+            mkt_ids = set(reference_data.get("markets", pd.DataFrame()).get("market_id", []))
+            if comm_ids:
+                cleaned = cleaned[cleaned["commodity_id"].isin(comm_ids)]
+            if mkt_ids:
+                cleaned = cleaned[cleaned["market_id"].isin(mkt_ids)]
+
+    elif table_name == "shipments":
+        cleaned["quantity_kg"] = cleaned["quantity_kg"].apply(lambda x: max(100.0, float(x)))
+        cleaned["distance_km"] = cleaned["distance_km"].apply(lambda x: max(10.0, float(x)))
+        cleaned["transport_cost"] = cleaned["transport_cost"].apply(lambda x: max(500.0, float(x)))
+        cleaned["initial_quality_percentage"] = cleaned["initial_quality_percentage"].clip(50.0, 100.0)
+        cleaned["estimated_remaining_shelf_life"] = cleaned["estimated_remaining_shelf_life"].apply(lambda x: max(0.1, float(x)))
+
+        # Referential filtering
+        if reference_data:
+            comm_ids = set(reference_data.get("commodities", pd.DataFrame()).get("commodity_id", []))
+            mkt_ids = set(reference_data.get("markets", pd.DataFrame()).get("market_id", []))
+            if comm_ids:
+                cleaned = cleaned[cleaned["commodity_id"].isin(comm_ids)]
+            if mkt_ids:
+                cleaned = cleaned[cleaned["source_market_id"].isin(mkt_ids) & cleaned["destination_market_id"].isin(mkt_ids)]
+
+    elif table_name == "sensor_readings":
+        cleaned["temperature"] = cleaned["temperature"].clip(-30.0, 70.0)
+        cleaned["humidity"] = cleaned["humidity"].clip(0.0, 100.0)
+        cleaned["vibration"] = cleaned["vibration"].apply(lambda x: max(0.0, float(x)))
+
+        if reference_data:
+            ship_ids = set(reference_data.get("shipments", pd.DataFrame()).get("shipment_id", []))
+            if ship_ids:
+                cleaned = cleaned[cleaned["shipment_id"].isin(ship_ids)]
+
+    elif table_name == "arbitrage_opportunities":
+        if reference_data:
+            ship_ids = set(reference_data.get("shipments", pd.DataFrame()).get("shipment_id", []))
+            if ship_ids:
+                cleaned = cleaned[cleaned["shipment_id"].isin(ship_ids)]
+
+    elif table_name == "alerts":
+        if reference_data:
+            ship_ids = set(reference_data.get("shipments", pd.DataFrame()).get("shipment_id", []))
+            if ship_ids:
+                cleaned = cleaned[cleaned["shipment_id"].isin(ship_ids)]
+
+    # 3. Provenance flag
+    cleaned["is_synthetic"] = 1
+
+    return cleaned.reset_index(drop=True)
+
+def clean_and_preprocess_all(datasets: Dict[str, pd.DataFrame]) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """
+    Clean and preprocess all generated datasets in dependency order to ensure
+    100% referential integrity and valid domain boundaries.
+    Returns cleaned datasets and validation audit report.
+    """
+    cleaned_datasets = {}
+
+    # 1. Clean independent tables
+    cleaned_datasets["commodities"] = clean_dataset("commodities", datasets.get("commodities", pd.DataFrame()))
+    cleaned_datasets["markets"] = clean_dataset("markets", datasets.get("markets", pd.DataFrame()))
+
+    # 2. Clean dependent tables
+    cleaned_datasets["market_prices"] = clean_dataset(
+        "market_prices", datasets.get("market_prices", pd.DataFrame()), reference_data=cleaned_datasets
+    )
+    cleaned_datasets["shipments"] = clean_dataset(
+        "shipments", datasets.get("shipments", pd.DataFrame()), reference_data=cleaned_datasets
+    )
+    cleaned_datasets["sensor_readings"] = clean_dataset(
+        "sensor_readings", datasets.get("sensor_readings", pd.DataFrame()), reference_data=cleaned_datasets
+    )
+    cleaned_datasets["arbitrage_opportunities"] = clean_dataset(
+        "arbitrage_opportunities", datasets.get("arbitrage_opportunities", pd.DataFrame()), reference_data=cleaned_datasets
+    )
+    cleaned_datasets["alerts"] = clean_dataset(
+        "alerts", datasets.get("alerts", pd.DataFrame()), reference_data=cleaned_datasets
+    )
+
+    # 3. Run audit on cleaned data
+    audit_report = run_comprehensive_validation(cleaned_datasets)
+
+    return cleaned_datasets, audit_report
 
 def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
     """
@@ -36,7 +196,6 @@ def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str,
         if df.empty:
             continue
         null_count = int(df.isnull().sum().sum())
-        # Check primary key duplication
         pk_col = df.columns[0]
         dup_count = int(df.duplicated(subset=[pk_col]).sum())
         
@@ -60,7 +219,7 @@ def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str,
         invalid_comm = (~price_df["commodity_id"].isin(valid_comm_ids)).sum()
         invalid_mkt = (~price_df["market_id"].isin(valid_mkt_ids)).sum()
         if invalid_comm > 0 or invalid_mkt > 0:
-            results["foreign_key_violations"] += (invalid_comm + invalid_mkt)
+            results["foreign_key_violations"] += int(invalid_comm + invalid_mkt)
             results["details"].append(f"Market prices have {invalid_comm} invalid comm IDs and {invalid_mkt} invalid mkt IDs.")
 
         # Price consistency: min <= modal <= max
@@ -75,7 +234,7 @@ def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str,
         inv_ship_comm = (~ship_df["commodity_id"].isin(valid_comm_ids)).sum()
         inv_ship_src = (~ship_df["source_market_id"].isin(valid_mkt_ids)).sum()
         inv_ship_dst = (~ship_df["destination_market_id"].isin(valid_mkt_ids)).sum()
-        total_ship_fk = inv_ship_comm + inv_ship_src + inv_ship_dst
+        total_ship_fk = int(inv_ship_comm + inv_ship_src + inv_ship_dst)
         if total_ship_fk > 0:
             results["foreign_key_violations"] += total_ship_fk
             results["details"].append(f"Shipments have {total_ship_fk} foreign key violations.")
