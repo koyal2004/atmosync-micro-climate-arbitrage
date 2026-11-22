@@ -1,14 +1,23 @@
 """
 AtmoSync - Page 8: Reports & Data Management
-Data Governance, Referential Audits, Multi-Format Exports (CSV, ZIP, Excel, PDF), and Database Management.
+Data Governance, Relational Database Audits, Dataset Previews,
+Multi-Format Export Pipelines (CSV, Excel, ZIP, PDF), and Database Status Monitoring.
+
+DISCLAIMER:
+All stored records and generated reports reflect synthetic agricultural simulation data.
 """
 
+import io
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 
+from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL, DB_PATH
 from database.database import (
-    load_table, get_record_counts, init_db, save_dataframe_to_db, is_database_populated
+    load_table, get_record_counts, init_db, save_dataframe_to_db,
+    is_database_populated, execute_query
 )
 from modules.data_generator import generate_all_datasets
 from modules.data_cleaning import run_comprehensive_validation, get_data_quality_dataframe
@@ -16,43 +25,106 @@ from modules.risk_engine import calculate_shipment_risk, get_risk_summary
 from modules.arbitrage_engine import evaluate_arbitrage_opportunities
 from utils.export import create_datasets_zip, create_excel_workbook, generate_pdf_report
 from utils.helpers import render_kpi_card
-from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL
+
+
+def get_database_diagnostics() -> dict:
+    """Retrieve database health, file size, and SQLite PRAGMA settings."""
+    diag = {
+        "exists": DB_PATH.exists(),
+        "path": str(DB_PATH),
+        "size_kb": 0.0,
+        "integrity": "Unknown",
+        "journal_mode": "Unknown",
+        "foreign_keys": "Unknown"
+    }
+    if DB_PATH.exists():
+        try:
+            diag["size_kb"] = round(DB_PATH.stat().st_size / 1024.0, 1)
+            integ_df = execute_query("PRAGMA integrity_check;")
+            diag["integrity"] = str(integ_df.iloc[0, 0]) if not integ_df.empty else "OK"
+            jm_df = execute_query("PRAGMA journal_mode;")
+            diag["journal_mode"] = str(jm_df.iloc[0, 0]).upper() if not jm_df.empty else "WAL"
+            fk_df = execute_query("PRAGMA foreign_keys;")
+            diag["foreign_keys"] = "ENABLED (1)" if (not fk_df.empty and fk_df.iloc[0, 0] == 1) else "OFF (0)"
+        except Exception as e:
+            diag["integrity"] = f"Check Failed: {e}"
+    return diag
+
 
 def render():
-    st.markdown('<div class="disclaimer-banner"><strong>Data Governance Suite:</strong> ' + PERSISTENT_DISCLAIMER + '</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="disclaimer-banner"><strong>Data Governance Suite:</strong> '
+        + PERSISTENT_DISCLAIMER
+        + "</div>",
+        unsafe_allow_html=True,
+    )
     st.title("Data Management & Analytics Reports")
-    st.caption(f"Relational Persistence, Referential Audits, Multi-Format Export Pipelines & PDF Intelligence Generation")
+    st.caption(
+        f"Relational Persistence, Referential Audits, Multi-Format Export Pipelines & PDF Intelligence Generation • {DATASET_LABEL}"
+    )
 
-    # Load datasets
-    datasets = {
-        "commodities": load_table("commodities"),
-        "markets": load_table("markets"),
-        "market_prices": load_table("market_prices"),
-        "shipments": load_table("shipments"),
-        "sensor_readings": load_table("sensor_readings"),
-        "arbitrage_opportunities": load_table("arbitrage_opportunities"),
-        "alerts": load_table("alerts")
-    }
+    # ------------------------------------------------------------------
+    # Load Datasets Safely
+    # ------------------------------------------------------------------
+    datasets = {}
+    table_names = [
+        "commodities", "markets", "market_prices",
+        "shipments", "sensor_readings", "arbitrage_opportunities", "alerts"
+    ]
+    load_errors = []
+    for t_name in table_names:
+        try:
+            datasets[t_name] = load_table(t_name)
+        except Exception as e:
+            load_errors.append(f"{t_name}: {e}")
+            datasets[t_name] = pd.DataFrame()
+
+    if load_errors:
+        st.warning(f"Notice: Issues encountered loading some tables: {', '.join(load_errors)}")
 
     counts = get_record_counts()
+    db_diag = get_database_diagnostics()
 
-    # Section 1: Dataset Summary KPI Cards
-    st.subheader("📊 Relational Database Storage Summary")
+    # ------------------------------------------------------------------
+    # Section 1: Database Status & Record Counts
+    # ------------------------------------------------------------------
+    st.subheader("📊 Relational Database Storage & Health Status")
+
+    # Status Bar
+    stat_c1, stat_c2, stat_c3, stat_c4 = st.columns(4)
+    with stat_c1:
+        st.markdown(f"**Database State:** `{'ONLINE 🟢' if db_diag['exists'] else 'OFFLINE 🔴'}`")
+        st.markdown(f"**Path:** `{db_diag['path']}`")
+    with stat_c2:
+        st.markdown(f"**Storage Size:** `{db_diag['size_kb']} KB` ({db_diag['size_kb']/1024:.2f} MB)")
+        st.markdown(f"**Integrity Check:** `{db_diag['integrity']}`")
+    with stat_c3:
+        st.markdown(f"**Journal Mode:** `{db_diag['journal_mode']}`")
+        st.markdown(f"**Foreign Keys:** `{db_diag['foreign_keys']}`")
+    with stat_c4:
+        st.markdown(f"**Total Records:** `{counts.get('total', 0):,}` rows")
+        st.markdown(f"**Cataloged Tables:** `{len(table_names)} tables`")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Table Counts KPI Cards
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.markdown(render_kpi_card("Total Records", f"{counts.get('total', 0):,}", "Active SQLite rows", icon="💾"), unsafe_allow_html=True)
     with c2:
-        st.markdown(render_kpi_card("Total Tables", f"{len(counts)-1}", "Relational schemas", icon="🗄️"), unsafe_allow_html=True)
-    with c3:
         st.markdown(render_kpi_card("Commodity SKUs", f"{counts.get('commodities', 0):,}", "Catalog records", icon="🌾"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(render_kpi_card("APMC Mandis", f"{counts.get('markets', 0):,}", "Trading hubs", icon="🏛️"), unsafe_allow_html=True)
     with c4:
-        st.markdown(render_kpi_card("Tracked Mandis", f"{counts.get('markets', 0):,}", "APMC locations", icon="🏛️"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Shipments", f"{counts.get('shipments', 0):,}", "Highway manifests", icon="🚚"), unsafe_allow_html=True)
     with c5:
-        st.markdown(render_kpi_card("Sensor Readings", f"{counts.get('sensor_readings', 0):,}", "Telemetry packets", icon="📡"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Sensor Readings", f"{counts.get('sensor_readings', 0):,}", "IoT telemetry packets", icon="📡"), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Section 2: Data Quality & Referential Integrity Analysis
+    # ------------------------------------------------------------------
+    # Section 2: Automated Data Quality, Null & Duplicate Audits
+    # ------------------------------------------------------------------
     st.subheader("🛡️ Automated Data Quality & Referential Integrity Audit")
     val_report = run_comprehensive_validation(datasets)
     quality_df = get_data_quality_dataframe(val_report)
@@ -61,90 +133,150 @@ def render():
     with qc1:
         st.markdown(render_kpi_card("Data Completeness", f"{val_report['completeness_pct']}%", "Null & duplicate check", delta="100% Passed", delta_color="positive", icon="✅"), unsafe_allow_html=True)
     with qc2:
-        st.markdown(render_kpi_card("Foreign Key Checks", f"{val_report['foreign_key_violations']}", "Orphaned relationships", delta="Zero Violations", delta_color="positive", icon="🔗"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Foreign Key Checks", f"{val_report['foreign_key_violations']}", "Orphaned relationships", delta="Zero Violations" if val_report['foreign_key_violations'] == 0 else "Violations Detected", delta_color="positive" if val_report['foreign_key_violations'] == 0 else "negative", icon="🔗"), unsafe_allow_html=True)
     with qc3:
-        st.markdown(render_kpi_card("Missing Values", f"{val_report['null_value_counts']}", "Empty attribute cells", delta="Zero Nulls", delta_color="positive", icon="🔍"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Missing Values", f"{val_report['null_value_counts']}", "Empty attribute cells", delta="Zero Nulls" if val_report['null_value_counts'] == 0 else "Nulls Flagged", delta_color="positive" if val_report['null_value_counts'] == 0 else "negative", icon="🔍"), unsafe_allow_html=True)
     with qc4:
-        st.markdown(render_kpi_card("Range Violations", f"{val_report['range_violations']}", "Min <= Modal <= Max", delta="All Valid", delta_color="positive", icon="📐"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Duplicate Records", f"{val_report['duplicate_counts']}", "Primary key collisions", delta="Zero Duplicates" if val_report['duplicate_counts'] == 0 else "Duplicates Found", delta_color="positive" if val_report['duplicate_counts'] == 0 else "negative", icon="📐"), unsafe_allow_html=True)
 
     st.dataframe(quality_df, use_container_width=True)
 
     st.markdown("---")
 
-    # Section 3: Data Preview
-    st.subheader("📑 Interactive Dataset Table Browser")
-    table_choice = st.selectbox(
-        "Select Table to Preview:",
-        ["commodities", "markets", "market_prices", "shipments", "sensor_readings", "arbitrage_opportunities", "alerts"]
-    )
-    if table_choice in datasets and not datasets[table_choice].empty:
-        st.dataframe(datasets[table_choice].head(100), use_container_width=True)
-        st.caption(f"Displaying top 100 rows of table '{table_choice}' (Total: {len(datasets[table_choice]):,} rows).")
+    # ------------------------------------------------------------------
+    # Section 3: Interactive Dataset Preview with Search & Filter
+    # ------------------------------------------------------------------
+    st.subheader("📑 Interactive Dataset Table Browser & Filtered Preview")
+    st.caption("Select a table, search or filter rows, inspect data attributes, and export the exact filtered subset.")
+
+    p_c1, p_c2, p_c3 = st.columns([1.5, 2.0, 1.0])
+    with p_c1:
+        table_choice = st.selectbox(
+            "Select Table to Preview:",
+            table_names,
+            index=0,
+            key="report_table_choice"
+        )
+    with p_c2:
+        search_filter = st.text_input(
+            "Search Table Content:",
+            placeholder="Filter rows by any text value...",
+            key="report_search_filter"
+        )
+    with p_c3:
+        row_limit = st.selectbox("Display Limit:", [50, 100, 250, 500], index=1, key="report_row_limit")
+
+    target_df = datasets.get(table_choice, pd.DataFrame())
+
+    if not target_df.empty:
+        # Apply search filter across all string columns
+        if search_filter:
+            s_term = search_filter.lower().strip()
+            mask = target_df.astype(str).apply(lambda row: row.str.lower().str.contains(s_term, na=False)).any(axis=1)
+            preview_df = target_df[mask]
+        else:
+            preview_df = target_df
+
+        st.caption(f"Showing {min(len(preview_df), row_limit):,} of {len(preview_df):,} matched rows (Total table rows: {len(target_df):,}).")
+        st.dataframe(preview_df.head(row_limit), use_container_width=True, height=280)
+
+        # Download Filtered View Button
+        filtered_csv_bytes = preview_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label=f"⬇️ Export Filtered View ({len(preview_df):,} rows as CSV)",
+            data=filtered_csv_bytes,
+            file_name=f"atmosync_{table_choice}_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key=f"dl_filtered_{table_choice}",
+            help="Exports the exact filtered search results visible in the table browser."
+        )
+    else:
+        st.info(f"Table '{table_choice}' is currently empty.")
 
     st.markdown("---")
 
-    # Section 4: Multi-Format Data Downloads & PDF Dossier
-    st.subheader("📥 Data Export & Report Generation Hub")
-    
+    # ------------------------------------------------------------------
+    # Section 4: Multi-Format Data Downloads & PDF Analytical Dossier
+    # ------------------------------------------------------------------
+    st.subheader("📥 Data Export & Analytical Report Hub")
+    st.caption("All exports are dynamically compiled from live SQLite records with embedded provenance disclaimers.")
+
     col_d1, col_d2 = st.columns(2)
 
     with col_d1:
         st.markdown("#### 📄 Executive Analytical PDF Report")
-        st.markdown("Generate a high-resolution, branded PDF dossier incorporating executive summaries, telemetry statistics, spoilage assessments, and arbitrage rankings.")
-        
-        if st.button("Generate PDF Report", type="primary", use_container_width=True):
-            with st.spinner("Compiling ReportLab PDF document..."):
-                # Compute live metrics for report
-                risk_df = calculate_shipment_risk(datasets["shipments"], datasets["commodities"], datasets["sensor_readings"])
-                r_summary = get_risk_summary(risk_df)
-                
-                summary_metrics = {
-                    "total_shipments": len(datasets["shipments"]),
-                    "active_shipments": int(datasets["shipments"]["shipment_status"].isin(["In Transit", "At Risk", "Delayed"]).sum()),
-                    "at_risk_shipments": int((datasets["shipments"]["shipment_status"] == "At Risk").sum()),
-                    "total_markets": len(datasets["markets"]),
-                    "avg_temp": float(datasets["sensor_readings"]["temperature"].mean()) if not datasets["sensor_readings"].empty else 0.0,
-                    "avg_hum": float(datasets["sensor_readings"]["humidity"].mean()) if not datasets["sensor_readings"].empty else 0.0,
-                    "total_arbitrage": len(datasets["arbitrage_opportunities"]),
-                    "max_benefit": float(datasets["arbitrage_opportunities"]["estimated_net_benefit"].max()) if not datasets["arbitrage_opportunities"].empty else 0.0
-                }
+        st.markdown(
+            "Generate a high-resolution, branded PDF dossier incorporating executive summaries, "
+            "telemetry statistics, spoilage assessments, and arbitrage rankings."
+        )
 
-                pdf_data = generate_pdf_report(summary_metrics, r_summary, datasets["arbitrage_opportunities"], val_report)
-                
-                st.download_button(
-                    label="⬇️ Download Executive PDF Dossier",
-                    data=pdf_data,
-                    file_name=f"AtmoSync_Executive_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-                st.success("Executive PDF report generated successfully!")
+        if st.button("Generate Executive PDF Report", type="primary", use_container_width=True, key="btn_gen_pdf"):
+            with st.spinner("Compiling ReportLab PDF dossier..."):
+                try:
+                    # Compute live metrics for report
+                    risk_df = calculate_shipment_risk(datasets["shipments"], datasets["commodities"], datasets["sensor_readings"])
+                    r_summary = get_risk_summary(risk_df)
+
+                    summary_metrics = {
+                        "total_shipments": len(datasets["shipments"]),
+                        "active_shipments": int(datasets["shipments"]["shipment_status"].isin(["In Transit", "At Risk", "Delayed"]).sum()) if not datasets["shipments"].empty else 0,
+                        "at_risk_shipments": int((datasets["shipments"]["shipment_status"] == "At Risk").sum()) if not datasets["shipments"].empty else 0,
+                        "total_markets": len(datasets["markets"]),
+                        "avg_temp": float(datasets["sensor_readings"]["temperature"].mean()) if not datasets["sensor_readings"].empty else 0.0,
+                        "avg_hum": float(datasets["sensor_readings"]["humidity"].mean()) if not datasets["sensor_readings"].empty else 0.0,
+                        "total_arbitrage": len(datasets["arbitrage_opportunities"]),
+                        "max_benefit": float(datasets["arbitrage_opportunities"]["estimated_net_benefit"].max()) if not datasets["arbitrage_opportunities"].empty else 0.0
+                    }
+
+                    pdf_data = generate_pdf_report(summary_metrics, r_summary, datasets["arbitrage_opportunities"], val_report)
+
+                    st.download_button(
+                        label="⬇️ Download Executive PDF Dossier",
+                        data=pdf_data,
+                        file_name=f"AtmoSync_Executive_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="btn_download_pdf_file"
+                    )
+                    st.success("Executive PDF report generated successfully!")
+                except Exception as e:
+                    st.error(f"Failed to generate PDF report: {e}")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 📦 Bulk Archives")
-        zip_bytes = create_datasets_zip(datasets)
-        st.download_button(
-            label="⬇️ Download Complete Dataset Archive (ZIP containing all CSVs)",
-            data=zip_bytes,
-            file_name=f"AtmoSync_Full_Datasets_{datetime.now().strftime('%Y%m%d')}.zip",
-            mime="application/zip",
-            use_container_width=True
-        )
+        st.markdown("#### 📦 Bulk Archives & Workbooks")
 
-        excel_bytes = create_excel_workbook(datasets)
-        st.download_button(
-            label="⬇️ Download Multi-Sheet Excel Workbook (.xlsx)",
-            data=excel_bytes,
-            file_name=f"AtmoSync_Worksheet_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        try:
+            zip_bytes = create_datasets_zip(datasets)
+            st.download_button(
+                label="⬇️ Download Complete Dataset Archive (ZIP of all CSVs)",
+                data=zip_bytes,
+                file_name=f"AtmoSync_Full_Datasets_{datetime.now().strftime('%Y%m%d')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="dl_zip_all"
+            )
+        except Exception as e:
+            st.error(f"ZIP export creation error: {e}")
+
+        try:
+            excel_bytes = create_excel_workbook(datasets)
+            st.download_button(
+                label="⬇️ Download Multi-Sheet Excel Workbook (.xlsx)",
+                data=excel_bytes,
+                file_name=f"AtmoSync_Worksheet_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_excel_all"
+            )
+        except Exception as e:
+            st.error(f"Excel export creation error: {e}")
 
     with col_d2:
         st.markdown("#### 📄 Individual Table CSV Downloads")
-        st.markdown("Export individual schema tables directly for external processing:")
-        
-        for name, df in datasets.items():
+        st.markdown("Export individual database tables directly for external processing:")
+
+        for name in table_names:
+            df = datasets.get(name, pd.DataFrame())
             if not df.empty:
                 csv_bytes = df.to_csv(index=False).encode("utf-8")
                 st.download_button(
@@ -152,9 +284,11 @@ def render():
                     data=csv_bytes,
                     file_name=f"atmosync_{name}.csv",
                     mime="text/csv",
-                    key=f"dl_{name}",
+                    key=f"dl_tbl_{name}",
                     use_container_width=True
                 )
+            else:
+                st.button(f"Table '{name}' is Empty", disabled=True, use_container_width=True, key=f"dl_empty_{name}")
 
         quality_csv = quality_df.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -162,13 +296,15 @@ def render():
             data=quality_csv,
             file_name="atmosync_data_quality_audit.csv",
             mime="text/csv",
-            key="dl_quality",
+            key="dl_quality_csv",
             use_container_width=True
         )
 
     st.markdown("---")
 
-    # Section 5: Database Configuration & Regeneration
+    # ------------------------------------------------------------------
+    # Section 5: Database Lifecycle Management & Synthetic Generator
+    # ------------------------------------------------------------------
     st.subheader("⚙️ Database Lifecycle Management & Synthetic Generator")
     st.markdown("Configure synthetic record volume and re-initialize relational SQLite database tables.")
 
@@ -178,21 +314,26 @@ def render():
         max_value=10000,
         value=10000,
         step=500,
-        help="Adjust target total records generated programmatically across all relational tables."
+        help="Adjust target total records generated programmatically across all relational tables.",
+        key="target_size_slider"
     )
 
     with st.expander("⚠️ Reset Database & Regenerate Synthetic Records (Requires Confirmation)"):
         st.error("Warning: This will truncate all tables in `atmosync.db` and synthesize new linked records.")
-        confirm = st.checkbox("I confirm I want to reset and regenerate the database.")
-        
-        if st.button("Reset Database & Regenerate Records", disabled=not confirm, type="primary"):
+        confirm = st.checkbox("I confirm I want to reset and regenerate the database.", key="chk_confirm_reset")
+
+        if st.button("Reset Database & Regenerate Records", disabled=not confirm, type="primary", key="btn_reset_db"):
             with st.spinner("Generating fresh synthetic dataset and re-populating SQLite..."):
-                init_db(force_reset=True)
-                new_datasets = generate_all_datasets(total_target=target_size)
-                for t_name, t_df in new_datasets.items():
-                    save_dataframe_to_db(t_df, t_name, if_exists="append")
-                st.success(f"Database reset and successfully populated with {target_size:,} records!")
-                st.rerun()
+                try:
+                    init_db(force_reset=True)
+                    new_datasets = generate_all_datasets(total_target=target_size)
+                    for t_name, t_df in new_datasets.items():
+                        save_dataframe_to_db(t_df, t_name, if_exists="append")
+                    st.success(f"Database reset and successfully populated with {target_size:,} records!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Database regeneration failed: {e}")
+
 
 if __name__ == "__main__":
     render()
