@@ -50,7 +50,67 @@ def render():
 
     # Calculate transparent, rule-based risk scores
     risk_df = calculate_shipment_risk(shipments_df, commodities_df, sensor_df)
-    summary = get_risk_summary(risk_df)
+    if risk_df.empty:
+        st.warning("Unable to compute risk scores. Please check database records.")
+        return
+
+    # ------------------------------------------------------------------
+    # Interactive Sidebar Filters
+    # ------------------------------------------------------------------
+    st.sidebar.markdown("### 🛡️ Spoilage Risk Filters")
+
+    # Risk Category Filter
+    risk_categories = ["All", "Critical", "High", "Moderate", "Low"]
+    selected_risk_cat = st.sidebar.selectbox("Risk Category Tier", risk_categories, index=0, key="spoil_risk_cat")
+
+    # Commodity Filter
+    all_commodities = ["All"] + sorted(risk_df["commodity_name"].dropna().unique().tolist())
+    selected_comm = st.sidebar.selectbox("Commodity", all_commodities, index=0, key="spoil_comm")
+
+    # Shipment Status Filter
+    statuses = ["All"] + sorted(risk_df["shipment_status"].dropna().unique().tolist())
+    selected_status = st.sidebar.selectbox("Shipment Status", statuses, index=0, key="spoil_status")
+
+    # Date Range Filter
+    if "departure_date" in risk_df.columns:
+        risk_df["dep_date_dt"] = pd.to_datetime(risk_df["departure_date"], errors="coerce")
+        min_date = risk_df["dep_date_dt"].min()
+        max_date = risk_df["dep_date_dt"].max()
+        if pd.notna(min_date) and pd.notna(max_date):
+            date_range = st.sidebar.date_input(
+                "Departure Date Range",
+                value=(min_date.date(), max_date.date()),
+                min_value=min_date.date(),
+                max_value=max_date.date(),
+                key="spoil_date_range"
+            )
+        else:
+            date_range = None
+    else:
+        date_range = None
+
+    # Apply Filters
+    filtered_risk = risk_df.copy()
+    if selected_risk_cat != "All":
+        filtered_risk = filtered_risk[filtered_risk["risk_category"] == selected_risk_cat]
+    if selected_comm != "All":
+        filtered_risk = filtered_risk[filtered_risk["commodity_name"] == selected_comm]
+    if selected_status != "All":
+        filtered_risk = filtered_risk[filtered_risk["shipment_status"] == selected_status]
+    if date_range and len(date_range) == 2 and "dep_date_dt" in filtered_risk.columns:
+        start_d, end_d = date_range
+        filtered_risk = filtered_risk[
+            (filtered_risk["dep_date_dt"].dt.date >= start_d)
+            & (filtered_risk["dep_date_dt"].dt.date <= end_d)
+        ]
+
+    # Handle Empty Data Condition gracefully
+    if filtered_risk.empty:
+        st.warning("⚠️ No consignments match the selected filter criteria. Please broaden your selection.")
+        return
+
+    # Compute Summary KPIs dynamically on filtered data
+    summary = get_risk_summary(filtered_risk)
 
     # ------------------------------------------------------------------
     # KPI Cards (Project-Defined Tiers)
@@ -65,7 +125,7 @@ def render():
     with k4:
         st.markdown(render_kpi_card("Critical (75–100)", f"{summary['critical']:,}", "Immediate reroute", delta=f"{summary['critical']} critical", delta_color="negative", icon="🔴"), unsafe_allow_html=True)
     with k5:
-        st.markdown(render_kpi_card("Fleet Avg Risk", f"{summary['avg_risk']:.1f} / 100", "Composite risk index", icon="📊"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Scope Avg Risk", f"{summary['avg_risk']:.1f} / 100", "Composite risk index", icon="📊"), unsafe_allow_html=True)
     with k6:
         st.markdown(render_kpi_card("Est. Quality Loss", f"{summary['avg_loss']:.1f} %", "Average degradation", delta_color="negative", icon="📉"), unsafe_allow_html=True)
 
@@ -81,26 +141,26 @@ def render():
 
         The composite **Spoilage Risk Index ($R \in [0, 100]$)** incorporates four independent environmental and operational vectors:
 
-        1. **Temperature Exposure Score ($E_{\\text{temp}} \in [0, 50]$):**
-           Calculates cumulative excursion degrees outside the commodity's optimal storage envelope $[T_{\\min}, T_{\\max}]$,
-           amplified by transit duration $\\tau$:
-           $$\\Delta T = \\max(0, T_{\\text{avg}} - T_{\\max}) + \\max(0, T_{\\min} - T_{\\text{avg}})$$
-           $$E_{\\text{temp}} = \\min\\left(50, \, (\\Delta T)^{1.25} \\times \\tau_{\\text{days}}^{0.5} \\times 4.2\\right)$$
+        1. **Temperature Exposure Score ($E_{\text{temp}} \in [0, 50]$):**
+           Calculates cumulative excursion degrees outside the commodity's optimal storage envelope $[T_{\min}, T_{\max}]$,
+           amplified by transit duration $\tau$:
+           $$\Delta T = \max(0, T_{\text{avg}} - T_{\max}) + \max(0, T_{\min} - T_{\text{avg}})$$
+           $$E_{\text{temp}} = \min\left(50, \, (\Delta T)^{1.25} \times \tau_{\text{days}}^{0.5} \times 4.2\right)$$
 
-        2. **Humidity Exposure Score ($E_{\\text{hum}} \in [0, 25]$):**
-           Penalizes excessive relative humidity above threshold $H_{\\max}$ causing fungal/moisture condensation:
-           $$E_{\\text{hum}} = \\min\\left(25, \, \\max(0, H_{\\text{avg}} - H_{\\max}) \\times 1.5\\right)$$
+        2. **Humidity Exposure Score ($E_{\text{hum}} \in [0, 25]$):**
+           Penalizes excessive relative humidity above threshold $H_{\max}$ causing fungal/moisture condensation:
+           $$E_{\text{hum}} = \min\left(25, \, \max(0, H_{\text{avg}} - H_{\max}) \times 1.5\right)$$
 
-        3. **Vibration Exposure Score ($E_{\\text{vibe}} \in [0, 15]$):**
-           Penalizes continuous mechanical shock and chassis acceleration above $1.2\\text{ g}$:
-           $$E_{\\text{vibe}} = \\min\\left(15, \, \\max(0, \\text{Vibe}_{\\text{avg}} - 1.2) \\times 4.0\\right)$$
+        3. **Vibration Exposure Score ($E_{\text{vibe}} \in [0, 15]$):**
+           Penalizes continuous mechanical shock and chassis acceleration above $1.2\text{ g}$:
+           $$E_{\text{vibe}} = \min\left(15, \, \max(0, \text{Vibe}_{\text{avg}} - 1.2) \times 4.0\right)$$
 
-        4. **Commodity Sensitivity Weight ($W_{\\text{sens}}$):**
+        4. **Commodity Sensitivity Weight ($W_{\text{sens}}$):**
            Biologically grounded respiration category multipliers:
            *Low* ($0.65$), *Moderate* ($1.00$), *High* ($1.35$), *Critical* ($1.70$).
 
         5. **Final Composite Score & Project Tiers:**
-           $$\\text{Risk Score} = \\text{clamp}\\Big((E_{\\text{temp}} + E_{\\text{hum}} + E_{\\text{vibe}}) \\times W_{\\text{sens}}, \, 0, \, 100\\Big)$$
+           $$\text{Risk Score} = \text{clamp}\Big((E_{\text{temp}} + E_{\text{hum}} + E_{\text{vibe}}) \times W_{\text{sens}}, \, 0, \, 100\Big)$$
 
         | Score Range | Risk Category | Operational Guidance |
         | :--- | :--- | :--- |
@@ -126,14 +186,14 @@ def render():
     r1_c1, r1_c2 = st.columns(2)
     with r1_c1:
         fig_donut = create_donut_chart(
-            risk_df, "risk_category",
+            filtered_risk, "risk_category",
             title="1. Spoilage Risk Category Distribution (Project-Defined)",
             color_map=risk_color_map
         )
         st.plotly_chart(fig_donut, use_container_width=True)
 
     with r1_c2:
-        top_ranked = risk_df.sort_values("risk_score", ascending=False).head(12)
+        top_ranked = filtered_risk.sort_values("risk_score", ascending=False).head(12)
         fig_rank = create_bar_chart(
             top_ranked, "shipment_id", "risk_score",
             color_col="risk_category", color_map=risk_color_map,
@@ -145,7 +205,7 @@ def render():
     r2_c1, r2_c2, r2_c3 = st.columns(3)
     with r2_c1:
         fig_t_exp = px.histogram(
-            risk_df, x="temperature_score", nbins=20,
+            filtered_risk, x="temperature_score", nbins=20,
             title="3. Temperature Exposure Score (0–50 pts)",
             color_discrete_sequence=[COLORS["critical"]]
         )
@@ -154,7 +214,7 @@ def render():
 
     with r2_c2:
         fig_h_exp = px.histogram(
-            risk_df, x="humidity_score", nbins=20,
+            filtered_risk, x="humidity_score", nbins=20,
             title="4. Humidity Stress Score (0–25 pts)",
             color_discrete_sequence=[COLORS["secondary"]]
         )
@@ -163,7 +223,7 @@ def render():
 
     with r2_c3:
         fig_v_exp = px.histogram(
-            risk_df, x="vibration_score", nbins=15,
+            filtered_risk, x="vibration_score", nbins=15,
             title="5. Vibration Impact Score (0–15 pts)",
             color_discrete_sequence=[COLORS["info"]]
         )
@@ -174,7 +234,7 @@ def render():
     r3_c1, r3_c2 = st.columns(2)
     with r3_c1:
         comm_risk = (
-            risk_df.groupby("commodity_name")["risk_score"]
+            filtered_risk.groupby("commodity_name")["risk_score"]
             .mean()
             .reset_index()
             .sort_values("risk_score", ascending=False)
@@ -182,13 +242,13 @@ def render():
         )
         fig_comm_r = create_bar_chart(
             comm_risk, "commodity_name", "risk_score",
-            title="6. Top 10 Commodities by Average Risk Score"
+            title="6. Top Commodities by Average Risk Score"
         )
         st.plotly_chart(fig_comm_r, use_container_width=True)
 
     with r3_c2:
         fig_shelf = px.box(
-            risk_df, x="risk_category", y="estimated_remaining_shelf_life",
+            filtered_risk, x="risk_category", y="estimated_remaining_shelf_life",
             color="risk_category", color_discrete_map=risk_color_map,
             category_orders={"risk_category": ["Low", "Moderate", "High", "Critical"]},
             title="7. Remaining Shelf Life (Days) across Risk Tiers"
@@ -200,19 +260,13 @@ def render():
     # Spoilage Risk Registry Table (Full Specification Display)
     # ------------------------------------------------------------------
     st.markdown("---")
-    st.subheader(f"📋 Consignment Spoilage Risk Registry ({len(risk_df):,} entries)")
+    st.subheader(f"📋 Consignment Spoilage Risk Registry ({len(filtered_risk):,} entries)")
     st.caption("Detailed breakdown per consignment with individual environmental exposure scores and recommended actions.")
 
-    # Search & Category Filters
-    t_f1, t_f2 = st.columns([1, 2])
-    with t_f1:
-        cat_filter = st.selectbox("Filter Risk Category:", ["All", "Critical", "High", "Moderate", "Low"], key="risk_tier_filter")
-    with t_f2:
-        search_txt = st.text_input("Search by Shipment ID or Commodity Name:", placeholder="e.g. SHP-0042, Tomato, Mango...", key="risk_search_txt")
+    # Search Filter within the filtered view
+    search_txt = st.text_input("Quick Search within filtered consignments (by Shipment ID or Commodity Name):", placeholder="e.g. SHP-0042, Tomato, Mango...", key="risk_search_txt")
 
-    display_table = risk_df.copy()
-    if cat_filter != "All":
-        display_table = display_table[display_table["risk_category"] == cat_filter]
+    display_table = filtered_risk.copy()
     if search_txt:
         s_low = search_txt.lower().strip()
         display_table = display_table[
@@ -221,7 +275,7 @@ def render():
         ]
 
     if display_table.empty:
-        st.info("No shipments match the selected risk category or search criteria.")
+        st.info("No shipments match the search query.")
         return
 
     # Required Display Columns:

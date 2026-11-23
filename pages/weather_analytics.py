@@ -16,30 +16,120 @@ from utils.charts import (
     create_donut_chart, THEME_LAYOUT
 )
 from modules.anomaly_detection import run_sensor_anomaly_detection
-from config.settings import PERSISTENT_DISCLAIMER, COLORS
+from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL
+
 
 def render():
-    st.markdown('<div class="disclaimer-banner"><strong>Reefer Micro-Climate Analytics:</strong> ' + PERSISTENT_DISCLAIMER + '</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="disclaimer-banner"><strong>Reefer Micro-Climate Analytics:</strong> '
+        + PERSISTENT_DISCLAIMER
+        + "</div>",
+        unsafe_allow_html=True
+    )
     st.title("Micro-Climate & Environmental Intelligence")
-    st.caption("Internal Shipping Container Atmosphere, Thermal Boundaries, Moisture Saturation & Kinetic Shock")
+    st.caption(
+        f"Internal Shipping Container Atmosphere, Thermal Boundaries, Moisture Saturation & Kinetic Shock • {DATASET_LABEL}"
+    )
 
-    sensor_df = load_table("sensor_readings")
-    commodities_df = load_table("commodities")
-    alerts_df = load_table("alerts")
-
-    if sensor_df.empty:
-        st.warning("Sensor dataset is empty.")
+    try:
+        sensor_df = load_table("sensor_readings")
+        shipments_df = load_table("shipments")
+        commodities_df = load_table("commodities")
+    except Exception as e:
+        st.error(f"⚠️ Failed to load database tables: {e}")
         return
 
-    # Run ML Anomaly Detection on telemetry
-    sensor_ml, ml_summary = run_sensor_anomaly_detection(sensor_df)
+    if sensor_df.empty:
+        st.warning("Sensor dataset is empty. Please populate or initialize synthetic data.")
+        return
 
-    # Calculate KPIs (Section 10)
-    avg_temp = float(sensor_df["temperature"].mean())
-    avg_hum = float(sensor_df["humidity"].mean())
-    max_temp = float(sensor_df["temperature"].max())
-    env_alerts = int((sensor_df["sensor_status"] != "Normal").sum())
-    avg_vibe = float(sensor_df["vibration"].mean())
+    # Ensure consistent relational join between sensors, shipments, and commodities
+    enriched_sensor = sensor_df.copy()
+    if not shipments_df.empty:
+        ship_sub = shipments_df[["shipment_id", "commodity_id", "shipment_status"]].drop_duplicates()
+        enriched_sensor = enriched_sensor.merge(ship_sub, on="shipment_id", how="left")
+    if not commodities_df.empty and "commodity_id" in enriched_sensor.columns:
+        comm_sub = commodities_df[["commodity_id", "commodity_name", "category"]].drop_duplicates()
+        enriched_sensor = enriched_sensor.merge(comm_sub, on="commodity_id", how="left")
+
+    enriched_sensor["timestamp_dt"] = pd.to_datetime(enriched_sensor["timestamp"], errors="coerce")
+
+    # ------------------------------------------------------------------
+    # Interactive Sidebar Filters
+    # ------------------------------------------------------------------
+    st.sidebar.markdown("### 🌡️ Micro-Climate Telemetry Filters")
+
+    # Date Range Filter
+    min_date = enriched_sensor["timestamp_dt"].min()
+    max_date = enriched_sensor["timestamp_dt"].max()
+    if pd.notna(min_date) and pd.notna(max_date):
+        date_range = st.sidebar.date_input(
+            "Telemetry Observation Period",
+            value=(min_date.date(), max_date.date()),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="weather_date_range"
+        )
+    else:
+        date_range = None
+
+    # Commodity Category Filter
+    if "category" in enriched_sensor.columns:
+        cat_options = ["All"] + sorted([c for c in enriched_sensor["category"].dropna().unique().tolist() if c])
+        selected_cat = st.sidebar.selectbox("Commodity Category", cat_options, index=0, key="weather_cat_filter")
+    else:
+        selected_cat = "All"
+
+    # Commodity Filter
+    if "commodity_name" in enriched_sensor.columns:
+        if selected_cat != "All":
+            comms_available = sorted(enriched_sensor[enriched_sensor["category"] == selected_cat]["commodity_name"].dropna().unique().tolist())
+        else:
+            comms_available = sorted(enriched_sensor["commodity_name"].dropna().unique().tolist())
+        comm_options = ["All"] + comms_available
+        selected_comm = st.sidebar.selectbox("Commodity Variety", comm_options, index=0, key="weather_comm_filter")
+    else:
+        selected_comm = "All"
+
+    # Reefer Container Filter
+    containers = ["All"] + sorted(enriched_sensor["container_id"].dropna().unique().tolist())
+    selected_container = st.sidebar.selectbox("Reefer Container ID", containers, index=0, key="weather_cont_filter")
+
+    # Sensor Status Filter
+    statuses = ["All", "Normal", "Warning", "Critical"]
+    selected_status = st.sidebar.selectbox("Telemetry Condition Status", statuses, index=0, key="weather_status_filter")
+
+    # Apply Filters
+    filtered_sensor = enriched_sensor.copy()
+    if date_range and len(date_range) == 2:
+        start_d, end_d = date_range
+        filtered_sensor = filtered_sensor[
+            (filtered_sensor["timestamp_dt"].dt.date >= start_d)
+            & (filtered_sensor["timestamp_dt"].dt.date <= end_d)
+        ]
+    if selected_cat != "All" and "category" in filtered_sensor.columns:
+        filtered_sensor = filtered_sensor[filtered_sensor["category"] == selected_cat]
+    if selected_comm != "All" and "commodity_name" in filtered_sensor.columns:
+        filtered_sensor = filtered_sensor[filtered_sensor["commodity_name"] == selected_comm]
+    if selected_container != "All":
+        filtered_sensor = filtered_sensor[filtered_sensor["container_id"] == selected_container]
+    if selected_status != "All":
+        filtered_sensor = filtered_sensor[filtered_sensor["sensor_status"] == selected_status]
+
+    # Handle Empty Data Condition Gracefully
+    if filtered_sensor.empty:
+        st.warning("⚠️ No environmental telemetry records match the selected filter criteria. Please broaden your selection.")
+        return
+
+    # Run ML Anomaly Detection on filtered telemetry
+    sensor_ml, ml_summary = run_sensor_anomaly_detection(filtered_sensor)
+
+    # Dynamic KPI Cards computed strictly from filtered data
+    avg_temp = float(filtered_sensor["temperature"].mean())
+    avg_hum = float(filtered_sensor["humidity"].mean())
+    max_temp = float(filtered_sensor["temperature"].max())
+    env_alerts = int((filtered_sensor["sensor_status"] != "Normal").sum())
+    avg_vibe = float(filtered_sensor["vibration"].mean())
 
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
@@ -66,12 +156,12 @@ def render():
         with tc3:
             crit_hum_thresh = st.slider("Moisture Critical Boundary (% RH)", min_value=85.0, max_value=99.0, value=95.0, step=1.0)
 
-    st.subheader("📊 Micro-Climate Analytical Suite (8 Core Charts)")
+    st.subheader(f"📊 Micro-Climate Analytical Suite ({len(filtered_sensor):,} telemetry points)")
 
     # 1. Temperature trend
     # 2. Humidity trend
     r1_c1, r1_c2 = st.columns(2)
-    sample_series = sensor_df.sort_values("timestamp").head(150)
+    sample_series = filtered_sensor.sort_values("timestamp").head(150)
     with r1_c1:
         fig_t = create_line_chart(sample_series, "timestamp", "temperature", title="1. Reefer Internal Temperature Trajectory (°C)", y_title="Temperature (°C)")
         st.plotly_chart(fig_t, use_container_width=True)
@@ -84,13 +174,14 @@ def render():
     # 4. Vibration analysis
     r2_c1, r2_c2 = st.columns(2)
     with r2_c1:
-        fig_scat = create_scatter_plot(sensor_ml.sample(n=min(1000, len(sensor_ml)), random_state=42), 
+        scatter_sample = sensor_ml.sample(n=min(1000, len(sensor_ml)), random_state=42) if len(sensor_ml) > 0 else sensor_ml
+        fig_scat = create_scatter_plot(scatter_sample, 
                                        "temperature", "humidity", color_col="sensor_status", 
                                        title="3. Temperature vs. Humidity Exposure Profile")
         st.plotly_chart(fig_scat, use_container_width=True)
 
     with r2_c2:
-        fig_vibe_hist = px.histogram(sensor_df, x="vibration", nbins=30, title="4. Vibration Accelerometer Distribution (g RMS)", color_discrete_sequence=[COLORS["primary"]])
+        fig_vibe_hist = px.histogram(filtered_sensor, x="vibration", nbins=30, title="4. Vibration Accelerometer Distribution (g RMS)", color_discrete_sequence=[COLORS["primary"]])
         fig_vibe_hist.update_layout(**THEME_LAYOUT)
         st.plotly_chart(fig_vibe_hist, use_container_width=True)
 
@@ -99,11 +190,11 @@ def render():
     r3_c1, r3_c2 = st.columns(2)
     with r3_c1:
         stat_colors = {"Normal": COLORS["info"], "Warning": COLORS["warning"], "Critical": COLORS["critical"]}
-        fig_stat = create_donut_chart(sensor_df, "sensor_status", title="5. Environmental Condition Classification", color_map=stat_colors)
+        fig_stat = create_donut_chart(filtered_sensor, "sensor_status", title="5. Environmental Condition Classification", color_map=stat_colors)
         st.plotly_chart(fig_stat, use_container_width=True)
 
     with r3_c2:
-        cont_compare = sensor_df.groupby("container_id").agg({"temperature": "mean", "humidity": "mean"}).reset_index().head(12)
+        cont_compare = filtered_sensor.groupby("container_id").agg({"temperature": "mean", "humidity": "mean"}).reset_index().head(12)
         fig_cont = go.Figure()
         fig_cont.add_trace(go.Bar(x=cont_compare["container_id"], y=cont_compare["temperature"], name="Avg Temp (°C)", marker_color=COLORS["critical"]))
         fig_cont.add_trace(go.Bar(x=cont_compare["container_id"], y=cont_compare["humidity"], name="Avg Humidity (%)", marker_color=COLORS["secondary"]))
@@ -114,7 +205,7 @@ def render():
     # 8. Environmental anomaly analysis (Isolation Forest)
     r4_c1, r4_c2 = st.columns(2)
     with r4_c1:
-        sensor_daily = sensor_df.copy()
+        sensor_daily = filtered_sensor.copy()
         sensor_daily["date"] = pd.to_datetime(sensor_daily["timestamp"]).dt.strftime("%Y-%m-%d")
         daily_spread = sensor_daily.groupby("date")["temperature"].agg(["min", "mean", "max"]).reset_index().tail(25)
         
@@ -132,6 +223,7 @@ def render():
                                       color_map={"Normal": COLORS["info"], "Anomaly": COLORS["critical"]},
                                       title="8. Isolation Forest ML Sensor Anomaly Detection Distribution")
         st.plotly_chart(fig_ml_bar, use_container_width=True)
+
 
 if __name__ == "__main__":
     render()

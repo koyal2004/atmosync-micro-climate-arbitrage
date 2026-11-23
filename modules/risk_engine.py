@@ -179,7 +179,9 @@ def calculate_shipment_risk(
             "distance_km": ship["distance_km"],
             "quantity_kg": ship["quantity_kg"],
             "source_market_id": ship["source_market_id"],
-            "destination_market_id": ship["destination_market_id"]
+            "destination_market_id": ship["destination_market_id"],
+            "departure_date": ship.get("departure_date", ""),
+            "expected_arrival_date": ship.get("expected_arrival_date", "")
         })
 
     return pd.DataFrame(results)
