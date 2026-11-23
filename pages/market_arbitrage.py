@@ -93,6 +93,10 @@ def render():
     elif selected_profit == "Unprofitable Only (Net Benefit ≤ 0)":
         filtered_arb = filtered_arb[filtered_arb["is_profitable"] == False]
 
+    if filtered_arb.empty:
+        st.warning("⚠️ No arbitrage opportunities match your selected filter criteria. Please broaden your selection.")
+        return
+
     # ------------------------------------------------------------------
     # Transparent Calculation Assumptions & Methodology Expander
     # ------------------------------------------------------------------

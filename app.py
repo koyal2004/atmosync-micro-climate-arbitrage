@@ -292,8 +292,8 @@ PAGE_DEFINITIONS = [
     {"path": "pages/commodity_analytics.py", "title": "Commodity Analytics", "icon": "🌾", "default": False},
     {"path": "pages/weather_analytics.py", "title": "Weather Analytics", "icon": "⛅", "default": False},
     {"path": "pages/spoilage_risk.py", "title": "Spoilage Risk Analysis", "icon": "⚠️", "default": False},
-    {"path": "pages/market_arbitrage.py", "title": "Market Arbitrage Intelligence", "icon": "💡", "default": False},
-    {"path": "pages/reports.py", "title": "Reports & Data Management", "icon": "📑", "default": False},
+    {"path": "pages/market_arbitrage.py", "title": "Market Arbitrage Analysis", "icon": "💡", "default": False},
+    {"path": "pages/reports.py", "title": "Reports and Data Management", "icon": "📑", "default": False},
 ]
 
 pages = []
