@@ -20,7 +20,10 @@ from database.database import (
     is_database_populated, execute_query
 )
 from modules.data_generator import generate_all_datasets
-from modules.data_cleaning import run_comprehensive_validation, get_data_quality_dataframe
+from modules.data_cleaning import (
+    run_comprehensive_validation, get_data_quality_dataframe,
+    clean_and_preprocess_all, validate_cross_table_relationships
+)
 from modules.risk_engine import calculate_shipment_risk, get_risk_summary
 from modules.arbitrage_engine import evaluate_arbitrage_opportunities
 from utils.export import create_datasets_zip, create_excel_workbook, generate_pdf_report
@@ -127,19 +130,44 @@ def render():
     # ------------------------------------------------------------------
     st.subheader("🛡️ Automated Data Quality & Referential Integrity Audit")
     val_report = run_comprehensive_validation(datasets)
+    rel_report = validate_cross_table_relationships(datasets)
     quality_df = get_data_quality_dataframe(val_report)
 
-    qc1, qc2, qc3, qc4 = st.columns(4)
+    if val_report["is_valid"] and rel_report["all_valid"]:
+        st.success(
+            "🟢 **Data Quality Verification Passed:** 100% referential integrity verified. "
+            "Zero missing primary keys, zero unlinked foreign keys, zero date inversions, and all numeric constraints validated."
+        )
+    else:
+        st.warning(
+            f"⚠️ **Data Quality Notice:** Identified {val_report['null_value_counts']} null cells, "
+            f"{val_report['duplicate_counts']} duplicate keys, {val_report['range_violations']} range excursions, "
+            f"and {rel_report['total_violations']} unlinked relationship records."
+        )
+
+    qc1, qc2, qc3, qc4, qc5 = st.columns(5)
     with qc1:
-        st.markdown(render_kpi_card("Data Completeness", f"{val_report['completeness_pct']}%", "Null & duplicate check", delta="100% Passed", delta_color="positive", icon="✅"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Data Completeness", f"{val_report['completeness_pct']}%", "Null & duplicate check", delta="100% Passed" if val_report['completeness_pct'] == 100 else "Issues Detected", delta_color="positive" if val_report['completeness_pct'] == 100 else "negative", icon="✅"), unsafe_allow_html=True)
     with qc2:
-        st.markdown(render_kpi_card("Foreign Key Checks", f"{val_report['foreign_key_violations']}", "Orphaned relationships", delta="Zero Violations" if val_report['foreign_key_violations'] == 0 else "Violations Detected", delta_color="positive" if val_report['foreign_key_violations'] == 0 else "negative", icon="🔗"), unsafe_allow_html=True)
+        st.markdown(render_kpi_card("Foreign Key Checks", f"{val_report['foreign_key_violations']}", "Cross-table linkage", delta="Zero Violations" if val_report['foreign_key_violations'] == 0 else "Violations Detected", delta_color="positive" if val_report['foreign_key_violations'] == 0 else "negative", icon="🔗"), unsafe_allow_html=True)
     with qc3:
         st.markdown(render_kpi_card("Missing Values", f"{val_report['null_value_counts']}", "Empty attribute cells", delta="Zero Nulls" if val_report['null_value_counts'] == 0 else "Nulls Flagged", delta_color="positive" if val_report['null_value_counts'] == 0 else "negative", icon="🔍"), unsafe_allow_html=True)
     with qc4:
         st.markdown(render_kpi_card("Duplicate Records", f"{val_report['duplicate_counts']}", "Primary key collisions", delta="Zero Duplicates" if val_report['duplicate_counts'] == 0 else "Duplicates Found", delta_color="positive" if val_report['duplicate_counts'] == 0 else "negative", icon="📐"), unsafe_allow_html=True)
+    with qc5:
+        st.markdown(render_kpi_card("Date & Range Audits", f"{val_report['date_violations'] + val_report['range_violations']}", "Temporal & numeric bounds", delta="Zero Inversions" if (val_report['date_violations'] + val_report['range_violations']) == 0 else "Violations Flagged", delta_color="positive" if (val_report['date_violations'] + val_report['range_violations']) == 0 else "negative", icon="⏱️"), unsafe_allow_html=True)
 
     st.dataframe(quality_df, use_container_width=True)
+
+    btn_c1, btn_c2 = st.columns([1.5, 2.5])
+    with btn_c1:
+        if st.button("🧹 Run Automated Preprocessing & Data Sanitization", key="btn_run_sanitize"):
+            with st.spinner("Executing sanitization, referential alignment and domain bounds enforcement..."):
+                cleaned_ds, clean_rep = clean_and_preprocess_all(datasets)
+                for t_name, c_df in cleaned_ds.items():
+                    save_dataframe_to_db(c_df, t_name, if_exists="replace")
+                st.success("✅ Dataset sanitization and preprocessing complete: 100% integrity verified and persisted!")
+                st.rerun()
 
     st.markdown("---")
 

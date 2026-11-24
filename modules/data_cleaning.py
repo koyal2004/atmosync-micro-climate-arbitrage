@@ -1,7 +1,8 @@
 """
-AtmoSync - Data Cleaning & Validation Suite
+AtmoSync - Data Cleaning, Quality Assurance & Preprocessing Suite
 Audits referential integrity, schema constraints, range violations,
-null values, duplicate keys, temporal/date logic, and preprocesses/cleans synthetic datasets.
+null values, duplicate keys, categorical validation, temporal/date logic,
+and provides robust sanitization and preprocessing across all agricultural datasets.
 """
 
 import logging
@@ -10,6 +11,15 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("atmosync.data_cleaning")
+
+# Categorical domain standards
+COMMODITY_CATEGORIES = {"Fruit", "Vegetable"}
+SENSITIVITY_LEVELS = {"Low", "Moderate", "High", "Critical"}
+MARKET_TYPES = {"Terminal Mandi", "Regional APMC", "Primary Mandi", "Wholesale Hub"}
+SHIPMENT_STATUSES = {"In Transit", "Delivered", "Delayed", "At Risk", "Completed"}
+SENSOR_STATUSES = {"Normal", "Warning", "Critical"}
+ALERT_SEVERITIES = {"Warning", "Critical"}
+ALERT_STATUSES = {"New", "Acknowledged", "Resolved"}
 
 
 def clean_dataset(
@@ -20,7 +30,7 @@ def clean_dataset(
     """
     Preprocess, validate, and clean a single dataset table.
     Enforces non-null primary keys, removes duplicate IDs, corrects range anomalies,
-    verifies temporal date ordering, and applies synthetic provenance labels.
+    sanitizes categorical values, verifies temporal date ordering, and applies synthetic provenance labels.
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -44,60 +54,109 @@ def clean_dataset(
 
     # 2. Table-specific domain rules, numeric constraints, and date validations
     if table_name == "commodities":
-        cleaned["base_price_per_kg"] = cleaned["base_price_per_kg"].apply(lambda x: max(1.0, float(x)))
-        cleaned["optimal_temperature"] = cleaned["optimal_temperature"].astype(float)
-        cleaned["minimum_temperature"] = cleaned["minimum_temperature"].astype(float)
-        cleaned["maximum_temperature"] = cleaned["maximum_temperature"].astype(float)
-        cleaned["minimum_temperature"] = np.minimum(cleaned["minimum_temperature"], cleaned["optimal_temperature"])
-        cleaned["maximum_temperature"] = np.maximum(cleaned["maximum_temperature"], cleaned["optimal_temperature"])
-        cleaned["optimal_humidity"] = cleaned["optimal_humidity"].clip(10.0, 99.0)
-        cleaned["maximum_humidity"] = np.maximum(cleaned["maximum_humidity"], cleaned["optimal_humidity"]).clip(10.0, 100.0)
-        cleaned["estimated_shelf_life_days"] = cleaned["estimated_shelf_life_days"].apply(lambda x: max(1, int(x)))
+        # Missing value imputation
+        if "commodity_name" in cleaned.columns:
+            cleaned["commodity_name"] = cleaned["commodity_name"].fillna("Agricultural Produce")
+        if "category" in cleaned.columns:
+            cleaned["category"] = cleaned["category"].apply(
+                lambda c: c if c in COMMODITY_CATEGORIES else "Vegetable"
+            )
+        if "sensitivity_level" in cleaned.columns:
+            cleaned["sensitivity_level"] = cleaned["sensitivity_level"].apply(
+                lambda s: s if s in SENSITIVITY_LEVELS else "Moderate"
+            )
+
+        if "base_price_per_kg" in cleaned.columns:
+            cleaned["base_price_per_kg"] = cleaned["base_price_per_kg"].fillna(30.0).apply(lambda x: max(1.0, float(x)))
+        if "optimal_temperature" in cleaned.columns:
+            cleaned["optimal_temperature"] = cleaned["optimal_temperature"].fillna(10.0).astype(float).clip(-10.0, 45.0)
+        if "minimum_temperature" in cleaned.columns:
+            cleaned["minimum_temperature"] = cleaned["minimum_temperature"].fillna(5.0).astype(float).clip(-15.0, 40.0)
+        if "maximum_temperature" in cleaned.columns:
+            cleaned["maximum_temperature"] = cleaned["maximum_temperature"].fillna(15.0).astype(float).clip(-5.0, 50.0)
+
+        # Enforce min <= optimal <= max
+        if all(c in cleaned.columns for c in ["minimum_temperature", "optimal_temperature", "maximum_temperature"]):
+            cleaned["minimum_temperature"] = np.minimum(cleaned["minimum_temperature"], cleaned["optimal_temperature"])
+            cleaned["maximum_temperature"] = np.maximum(cleaned["maximum_temperature"], cleaned["optimal_temperature"])
+
+        if "optimal_humidity" in cleaned.columns:
+            cleaned["optimal_humidity"] = cleaned["optimal_humidity"].fillna(85.0).clip(10.0, 99.0)
+        if "maximum_humidity" in cleaned.columns:
+            cleaned["maximum_humidity"] = cleaned["maximum_humidity"].fillna(95.0).clip(10.0, 100.0)
+        if "optimal_humidity" in cleaned.columns and "maximum_humidity" in cleaned.columns:
+            cleaned["maximum_humidity"] = np.maximum(cleaned["maximum_humidity"], cleaned["optimal_humidity"]).clip(10.0, 100.0)
+
+        if "estimated_shelf_life_days" in cleaned.columns:
+            cleaned["estimated_shelf_life_days"] = cleaned["estimated_shelf_life_days"].fillna(14).apply(lambda x: max(1, int(x)))
 
     elif table_name == "markets":
-        cleaned["latitude"] = cleaned["latitude"].clip(-90.0, 90.0)
-        cleaned["longitude"] = cleaned["longitude"].clip(-180.0, 180.0)
-        cleaned["estimated_daily_capacity"] = cleaned["estimated_daily_capacity"].apply(lambda x: max(100, int(x)))
+        if "market_name" in cleaned.columns:
+            cleaned["market_name"] = cleaned["market_name"].fillna("APMC Market")
+        if "state" in cleaned.columns:
+            cleaned["state"] = cleaned["state"].fillna("Maharashtra")
+        if "district" in cleaned.columns:
+            cleaned["district"] = cleaned["district"].fillna("Central District")
+        if "market_type" in cleaned.columns:
+            cleaned["market_type"] = cleaned["market_type"].apply(
+                lambda m: m if m in MARKET_TYPES else "Regional APMC"
+            )
+        if "latitude" in cleaned.columns:
+            cleaned["latitude"] = cleaned["latitude"].fillna(19.0760).clip(-90.0, 90.0)
+        if "longitude" in cleaned.columns:
+            cleaned["longitude"] = cleaned["longitude"].fillna(72.8777).clip(-180.0, 180.0)
+        if "estimated_daily_capacity" in cleaned.columns:
+            cleaned["estimated_daily_capacity"] = cleaned["estimated_daily_capacity"].fillna(5000).apply(lambda x: max(100, int(x)))
 
     elif table_name == "market_prices":
-        cleaned["modal_price"] = cleaned["modal_price"].apply(lambda x: max(1.0, float(x)))
-        cleaned["minimum_price"] = cleaned["minimum_price"].apply(lambda x: max(0.5, float(x)))
-        cleaned["maximum_price"] = cleaned["maximum_price"].apply(lambda x: max(1.0, float(x)))
+        if "modal_price" in cleaned.columns:
+            cleaned["modal_price"] = cleaned["modal_price"].fillna(40.0).apply(lambda x: max(1.0, float(x)))
+        if "minimum_price" in cleaned.columns:
+            cleaned["minimum_price"] = cleaned["minimum_price"].fillna(35.0).apply(lambda x: max(0.5, float(x)))
+        if "maximum_price" in cleaned.columns:
+            cleaned["maximum_price"] = cleaned["maximum_price"].fillna(45.0).apply(lambda x: max(1.0, float(x)))
 
         # Strict invariant: minimum_price <= modal_price <= maximum_price
-        cleaned["minimum_price"] = np.minimum(cleaned["minimum_price"], cleaned["modal_price"])
-        cleaned["maximum_price"] = np.maximum(cleaned["maximum_price"], cleaned["modal_price"])
+        if all(c in cleaned.columns for c in ["minimum_price", "modal_price", "maximum_price"]):
+            cleaned["minimum_price"] = np.minimum(cleaned["minimum_price"], cleaned["modal_price"])
+            cleaned["maximum_price"] = np.maximum(cleaned["maximum_price"], cleaned["modal_price"])
+            mask_equal = cleaned["minimum_price"] >= cleaned["maximum_price"]
+            cleaned.loc[mask_equal, "maximum_price"] = cleaned.loc[mask_equal, "minimum_price"] + 1.0
 
-        mask_equal = cleaned["minimum_price"] >= cleaned["maximum_price"]
-        cleaned.loc[mask_equal, "maximum_price"] = cleaned.loc[mask_equal, "minimum_price"] + 1.0
-
-        cleaned["arrival_quantity"] = cleaned["arrival_quantity"].apply(lambda x: max(0.0, float(x)))
-        cleaned["demand_index"] = cleaned["demand_index"].clip(20.0, 200.0)
-        cleaned["supply_index"] = cleaned["supply_index"].clip(20.0, 200.0)
+        if "arrival_quantity" in cleaned.columns:
+            cleaned["arrival_quantity"] = cleaned["arrival_quantity"].fillna(1000.0).apply(lambda x: max(0.0, float(x)))
+        if "demand_index" in cleaned.columns:
+            cleaned["demand_index"] = cleaned["demand_index"].fillna(100.0).clip(10.0, 300.0)
+        if "supply_index" in cleaned.columns:
+            cleaned["supply_index"] = cleaned["supply_index"].fillna(100.0).clip(10.0, 300.0)
 
         # Date validation: ensure parseable ISO dates
-        cleaned["date"] = pd.to_datetime(cleaned["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        cleaned = cleaned.dropna(subset=["date"])
+        if "date" in cleaned.columns:
+            cleaned["date"] = pd.to_datetime(cleaned["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("2026-10-01")
 
         if reference_data:
             comm_ids = set(reference_data.get("commodities", pd.DataFrame()).get("commodity_id", []))
             mkt_ids = set(reference_data.get("markets", pd.DataFrame()).get("market_id", []))
-            if comm_ids:
+            if comm_ids and "commodity_id" in cleaned.columns:
                 cleaned = cleaned[cleaned["commodity_id"].isin(comm_ids)]
-            if mkt_ids:
+            if mkt_ids and "market_id" in cleaned.columns:
                 cleaned = cleaned[cleaned["market_id"].isin(mkt_ids)]
 
     elif table_name == "shipments":
+        if "shipment_status" in cleaned.columns:
+            cleaned["shipment_status"] = cleaned["shipment_status"].apply(
+                lambda s: s if s in SHIPMENT_STATUSES else "In Transit"
+            )
         if "quantity_kg" in cleaned.columns:
-            cleaned["quantity_kg"] = cleaned["quantity_kg"].apply(lambda x: max(100.0, float(x)) if pd.notna(x) else 100.0)
+            cleaned["quantity_kg"] = cleaned["quantity_kg"].fillna(1500.0).apply(lambda x: max(100.0, float(x)))
         if "distance_km" in cleaned.columns:
-            cleaned["distance_km"] = cleaned["distance_km"].apply(lambda x: max(10.0, float(x)) if pd.notna(x) else 10.0)
+            cleaned["distance_km"] = cleaned["distance_km"].fillna(250.0).apply(lambda x: max(10.0, float(x)))
         if "transport_cost" in cleaned.columns:
-            cleaned["transport_cost"] = cleaned["transport_cost"].apply(lambda x: max(500.0, float(x)) if pd.notna(x) else 500.0)
+            cleaned["transport_cost"] = cleaned["transport_cost"].fillna(3000.0).apply(lambda x: max(500.0, float(x)))
         if "initial_quality_percentage" in cleaned.columns:
-            cleaned["initial_quality_percentage"] = cleaned["initial_quality_percentage"].clip(50.0, 100.0)
+            cleaned["initial_quality_percentage"] = cleaned["initial_quality_percentage"].fillna(95.0).clip(50.0, 100.0)
         if "estimated_remaining_shelf_life" in cleaned.columns:
-            cleaned["estimated_remaining_shelf_life"] = cleaned["estimated_remaining_shelf_life"].apply(lambda x: max(0.1, float(x)) if pd.notna(x) else 1.0)
+            cleaned["estimated_remaining_shelf_life"] = cleaned["estimated_remaining_shelf_life"].fillna(10.0).apply(lambda x: max(0.1, float(x)))
 
         # Date parsing and temporal consistency: departure_date <= expected_arrival_date
         if "departure_date" in cleaned.columns and "expected_arrival_date" in cleaned.columns:
@@ -120,44 +179,83 @@ def clean_dataset(
                 ]
 
     elif table_name == "sensor_readings":
+        if "sensor_status" in cleaned.columns:
+            cleaned["sensor_status"] = cleaned["sensor_status"].apply(
+                lambda s: s if s in SENSOR_STATUSES else "Normal"
+            )
         if "temperature" in cleaned.columns:
-            cleaned["temperature"] = cleaned["temperature"].clip(-30.0, 70.0)
+            cleaned["temperature"] = cleaned["temperature"].fillna(12.0).clip(-30.0, 70.0)
         if "humidity" in cleaned.columns:
-            cleaned["humidity"] = cleaned["humidity"].clip(0.0, 100.0)
+            cleaned["humidity"] = cleaned["humidity"].fillna(85.0).clip(0.0, 100.0)
         if "vibration" in cleaned.columns:
-            cleaned["vibration"] = cleaned["vibration"].clip(0.0, 10.0)
-        if "timestamp" in cleaned.columns:
-            ts_dt = pd.to_datetime(cleaned["timestamp"], errors="coerce")
-            cleaned["timestamp"] = ts_dt.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("2026-11-01 00:00:00")
-        cleaned["vibration"] = cleaned["vibration"].apply(lambda x: max(0.0, float(x)))
+            cleaned["vibration"] = cleaned["vibration"].fillna(0.8).clip(0.0, 10.0)
 
         # Timestamp format verification
-        ts_dt = pd.to_datetime(cleaned["timestamp"], errors="coerce")
-        cleaned["timestamp"] = ts_dt.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("2026-10-01 00:00:00")
+        if "timestamp" in cleaned.columns:
+            ts_dt = pd.to_datetime(cleaned["timestamp"], errors="coerce")
+            cleaned["timestamp"] = ts_dt.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("2026-10-01 00:00:00")
 
         if reference_data:
             ship_ids = set(reference_data.get("shipments", pd.DataFrame()).get("shipment_id", []))
-            if ship_ids:
+            if ship_ids and "shipment_id" in cleaned.columns:
                 cleaned = cleaned[cleaned["shipment_id"].isin(ship_ids)]
 
     elif table_name == "arbitrage_opportunities":
-        cleaned["quantity_kg"] = cleaned["quantity_kg"].apply(lambda x: max(1.0, float(x)))
-        cleaned["transportation_cost"] = cleaned["transportation_cost"].apply(lambda x: max(0.0, float(x)))
-        cleaned["handling_cost"] = cleaned["handling_cost"].apply(lambda x: max(0.0, float(x)))
+        if "quantity_kg" in cleaned.columns:
+            cleaned["quantity_kg"] = cleaned["quantity_kg"].fillna(1500.0).apply(lambda x: max(1.0, float(x)))
+        if "transportation_cost" in cleaned.columns:
+            cleaned["transportation_cost"] = cleaned["transportation_cost"].fillna(2000.0).apply(lambda x: max(0.0, float(x)))
+        if "handling_cost" in cleaned.columns:
+            cleaned["handling_cost"] = cleaned["handling_cost"].fillna(600.0).apply(lambda x: max(0.0, float(x)))
+        if "estimated_quality_loss" in cleaned.columns:
+            cleaned["estimated_quality_loss"] = cleaned["estimated_quality_loss"].fillna(0.05).clip(0.0, 1.0)
+
+        # Recompute financial invariants
+        if all(c in cleaned.columns for c in ["destination_market_price", "source_market_price", "quantity_kg"]):
+            cleaned["gross_price_advantage"] = (
+                (cleaned["destination_market_price"] - cleaned["source_market_price"]) * cleaned["quantity_kg"]
+            ).round(2)
+
+        if all(c in cleaned.columns for c in [
+            "gross_price_advantage", "transportation_cost", "handling_cost",
+            "destination_market_price", "quantity_kg", "estimated_quality_loss"
+        ]):
+            q_loss_val = (cleaned["destination_market_price"] * cleaned["quantity_kg"] * cleaned["estimated_quality_loss"])
+            cleaned["estimated_net_benefit"] = (
+                cleaned["gross_price_advantage"] - cleaned["transportation_cost"] - cleaned["handling_cost"] - q_loss_val
+            ).round(2)
+
+        if "recommendation_status" in cleaned.columns:
+            if "estimated_net_benefit" in cleaned.columns:
+                cleaned["recommendation_status"] = np.where(
+                    cleaned["estimated_net_benefit"] > 0, "Recommended", "Not Recommended"
+                )
 
         if reference_data:
             ship_ids = set(reference_data.get("shipments", pd.DataFrame()).get("shipment_id", []))
-            if ship_ids:
+            if ship_ids and "shipment_id" in cleaned.columns:
                 cleaned = cleaned[cleaned["shipment_id"].isin(ship_ids)]
 
     elif table_name == "alerts":
+        if "severity" in cleaned.columns:
+            cleaned["severity"] = cleaned["severity"].apply(
+                lambda s: s if s in ALERT_SEVERITIES else "Warning"
+            )
+        if "status" in cleaned.columns:
+            cleaned["status"] = cleaned["status"].apply(
+                lambda s: s if s in ALERT_STATUSES else "New"
+            )
+        if "description" in cleaned.columns:
+            cleaned["description"] = cleaned["description"].fillna("System notification alert")
+
         # Timestamp verification
-        ts_dt = pd.to_datetime(cleaned["timestamp"], errors="coerce")
-        cleaned["timestamp"] = ts_dt.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("2026-10-01 00:00:00")
+        if "timestamp" in cleaned.columns:
+            ts_dt = pd.to_datetime(cleaned["timestamp"], errors="coerce")
+            cleaned["timestamp"] = ts_dt.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("2026-10-01 00:00:00")
 
         if reference_data:
             ship_ids = set(reference_data.get("shipments", pd.DataFrame()).get("shipment_id", []))
-            if ship_ids:
+            if ship_ids and "shipment_id" in cleaned.columns:
                 cleaned = cleaned[cleaned["shipment_id"].isin(ship_ids)]
 
     # Provenance metadata
@@ -206,6 +304,70 @@ def validate_and_sanitize_dataframe(df: pd.DataFrame, table_name: str) -> pd.Dat
     return clean_dataset(table_name, df)
 
 
+def validate_cross_table_relationships(datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """
+    Explicitly checks relationships across shipments, sensors, markets, and commodity records.
+    Returns status and violation counts for each relationship.
+    """
+    comm_df = datasets.get("commodities", pd.DataFrame())
+    mkt_df = datasets.get("markets", pd.DataFrame())
+    ship_df = datasets.get("shipments", pd.DataFrame())
+    sensor_df = datasets.get("sensor_readings", pd.DataFrame())
+    price_df = datasets.get("market_prices", pd.DataFrame())
+    arb_df = datasets.get("arbitrage_opportunities", pd.DataFrame())
+    alerts_df = datasets.get("alerts", pd.DataFrame())
+
+    valid_comms = set(comm_df["commodity_id"]) if not comm_df.empty else set()
+    valid_mkts = set(mkt_df["market_id"]) if not mkt_df.empty else set()
+    valid_ships = set(ship_df["shipment_id"]) if not ship_df.empty else set()
+
+    report = {
+        "shipment_commodity": 0,
+        "shipment_source_market": 0,
+        "shipment_destination_market": 0,
+        "sensor_shipment": 0,
+        "sensor_container_alignment": 0,
+        "price_commodity": 0,
+        "price_market": 0,
+        "arbitrage_shipment": 0,
+        "alert_shipment": 0,
+        "all_valid": True,
+        "total_violations": 0
+    }
+
+    if not ship_df.empty:
+        if valid_comms:
+            report["shipment_commodity"] = int((~ship_df["commodity_id"].isin(valid_comms)).sum())
+        if valid_mkts:
+            report["shipment_source_market"] = int((~ship_df["source_market_id"].isin(valid_mkts)).sum())
+            report["shipment_destination_market"] = int((~ship_df["destination_market_id"].isin(valid_mkts)).sum())
+
+    if not sensor_df.empty and valid_ships:
+        report["sensor_shipment"] = int((~sensor_df["shipment_id"].isin(valid_ships)).sum())
+        # Check container alignment if both have container_id
+        if not ship_df.empty and "container_id" in sensor_df.columns and "container_id" in ship_df.columns:
+            ship_cont_map = dict(zip(ship_df["shipment_id"], ship_df["container_id"]))
+            expected_cont = sensor_df["shipment_id"].map(ship_cont_map)
+            mismatch = (sensor_df["container_id"] != expected_cont) & expected_cont.notna()
+            report["sensor_container_alignment"] = int(mismatch.sum())
+
+    if not price_df.empty:
+        if valid_comms:
+            report["price_commodity"] = int((~price_df["commodity_id"].isin(valid_comms)).sum())
+        if valid_mkts:
+            report["price_market"] = int((~price_df["market_id"].isin(valid_mkts)).sum())
+
+    if not arb_df.empty and valid_ships:
+        report["arbitrage_shipment"] = int((~arb_df["shipment_id"].isin(valid_ships)).sum())
+
+    if not alerts_df.empty and valid_ships:
+        report["alert_shipment"] = int((~alerts_df["shipment_id"].isin(valid_ships)).sum())
+
+    report["total_violations"] = sum(v for k, v in report.items() if k not in ["all_valid", "total_violations"])
+    report["all_valid"] = (report["total_violations"] == 0)
+    return report
+
+
 def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
     """
     Validates all tables across foreign keys, null checks, duplicates,
@@ -228,6 +390,7 @@ def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str,
         "duplicate_counts": 0,
         "range_violations": 0,
         "date_violations": 0,
+        "categorical_violations": 0,
         "details": []
     }
 
@@ -249,20 +412,31 @@ def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str,
             "duplicate_pks": dup_count
         }
 
-    # Foreign Key Audits
-    valid_comm_ids = set(comm_df["commodity_id"]) if not comm_df.empty else set()
-    valid_mkt_ids = set(mkt_df["market_id"]) if not mkt_df.empty else set()
-    valid_ship_ids = set(ship_df["shipment_id"]) if not ship_df.empty else set()
+    # Categorical Checks
+    if not comm_df.empty and "sensitivity_level" in comm_df.columns:
+        inv_sens = (~comm_df["sensitivity_level"].isin(SENSITIVITY_LEVELS)).sum()
+        if inv_sens > 0:
+            results["categorical_violations"] += int(inv_sens)
+            results["details"].append(f"Commodities have {inv_sens} invalid sensitivity levels.")
 
-    # Price -> Comm & Market
-    if not price_df.empty:
-        invalid_comm = (~price_df["commodity_id"].isin(valid_comm_ids)).sum()
-        invalid_mkt = (~price_df["market_id"].isin(valid_mkt_ids)).sum()
-        if invalid_comm > 0 or invalid_mkt > 0:
-            results["foreign_key_violations"] += int(invalid_comm + invalid_mkt)
-            results["details"].append(f"Market prices have {invalid_comm} invalid comm IDs and {invalid_mkt} invalid mkt IDs.")
+    if not ship_df.empty and "shipment_status" in ship_df.columns:
+        inv_stat = (~ship_df["shipment_status"].isin(SHIPMENT_STATUSES)).sum()
+        if inv_stat > 0:
+            results["categorical_violations"] += int(inv_stat)
+            results["details"].append(f"Shipments have {inv_stat} invalid shipment statuses.")
 
-        # Price consistency: min <= modal <= max
+    if not sensor_df.empty and "sensor_status" in sensor_df.columns:
+        inv_sns_stat = (~sensor_df["sensor_status"].isin(SENSOR_STATUSES)).sum()
+        if inv_sns_stat > 0:
+            results["categorical_violations"] += int(inv_sns_stat)
+            results["details"].append(f"Sensors have {inv_sns_stat} invalid sensor statuses.")
+
+    # Cross-table relationship audit
+    rel_report = validate_cross_table_relationships(datasets)
+    results["foreign_key_violations"] += rel_report["total_violations"]
+
+    # Price consistency: min <= modal <= max
+    if not price_df.empty and all(c in price_df.columns for c in ["minimum_price", "modal_price", "maximum_price"]):
         price_inv = (price_df["minimum_price"] > price_df["modal_price"]) | (price_df["modal_price"] > price_df["maximum_price"])
         inv_count = int(price_inv.sum())
         if inv_count > 0:
@@ -275,70 +449,52 @@ def run_comprehensive_validation(datasets: Dict[str, pd.DataFrame]) -> Dict[str,
             results["date_violations"] += int(invalid_dates)
             results["details"].append(f"Market prices have {invalid_dates} unparseable date records.")
 
-    # Shipment -> Comm & Markets & Dates
+    # Shipment range & dates
     if not ship_df.empty:
-        inv_ship_comm = (~ship_df["commodity_id"].isin(valid_comm_ids)).sum()
-        inv_ship_src = (~ship_df["source_market_id"].isin(valid_mkt_ids)).sum()
-        inv_ship_dst = (~ship_df["destination_market_id"].isin(valid_mkt_ids)).sum()
-        total_ship_fk = int(inv_ship_comm + inv_ship_src + inv_ship_dst)
-        if total_ship_fk > 0:
-            results["foreign_key_violations"] += total_ship_fk
-            results["details"].append(f"Shipments have {total_ship_fk} foreign key violations.")
-
-        # Quantities must be > 0
-        inv_qty = (ship_df["quantity_kg"] <= 0).sum()
-        if inv_qty > 0:
-            results["range_violations"] += int(inv_qty)
-            results["details"].append(f"{inv_qty} shipments have non-positive quantities.")
+        if "quantity_kg" in ship_df.columns:
+            inv_qty = (ship_df["quantity_kg"] <= 0).sum()
+            if inv_qty > 0:
+                results["range_violations"] += int(inv_qty)
+                results["details"].append(f"{inv_qty} shipments have non-positive quantities.")
 
         # Temporal ordering check: departure_date <= expected_arrival_date
-        dep = pd.to_datetime(ship_df["departure_date"], errors="coerce")
-        arr = pd.to_datetime(ship_df["expected_arrival_date"], errors="coerce")
-        date_inversions = int((dep > arr).sum())
-        invalid_dep_arr = int(dep.isnull().sum() + arr.isnull().sum())
-        if date_inversions > 0 or invalid_dep_arr > 0:
-            results["date_violations"] += int(date_inversions + invalid_dep_arr)
-            results["details"].append(f"Shipments have {date_inversions} date inversion(s) and {invalid_dep_arr} invalid date string(s).")
+        if "departure_date" in ship_df.columns and "expected_arrival_date" in ship_df.columns:
+            dep = pd.to_datetime(ship_df["departure_date"], errors="coerce")
+            arr = pd.to_datetime(ship_df["expected_arrival_date"], errors="coerce")
+            date_inversions = int((dep > arr).sum())
+            invalid_dep_arr = int(dep.isnull().sum() + arr.isnull().sum())
+            if date_inversions > 0 or invalid_dep_arr > 0:
+                results["date_violations"] += int(date_inversions + invalid_dep_arr)
+                results["details"].append(f"Shipments have {date_inversions} date inversion(s) and {invalid_dep_arr} invalid date string(s).")
 
-    # Sensors -> Shipments
+    # Sensor temperature & humidity ranges
     if not sensor_df.empty:
-        inv_sns_ship = (~sensor_df["shipment_id"].isin(valid_ship_ids)).sum()
-        if inv_sns_ship > 0:
-            results["foreign_key_violations"] += int(inv_sns_ship)
-            results["details"].append(f"Sensors have {inv_sns_ship} unlinked shipment IDs.")
+        if "temperature" in sensor_df.columns and "humidity" in sensor_df.columns:
+            extreme_temp = ((sensor_df["temperature"] < -30) | (sensor_df["temperature"] > 70)).sum()
+            extreme_hum = ((sensor_df["humidity"] < 0) | (sensor_df["humidity"] > 100)).sum()
+            if extreme_temp > 0 or extreme_hum > 0:
+                results["range_violations"] += int(extreme_temp + extreme_hum)
+                results["details"].append(f"Sensors have extreme readings: {extreme_temp} temp / {extreme_hum} humidity.")
 
-        # Temperature & Humidity range check
-        extreme_temp = ((sensor_df["temperature"] < -30) | (sensor_df["temperature"] > 70)).sum()
-        extreme_hum = ((sensor_df["humidity"] < 0) | (sensor_df["humidity"] > 100)).sum()
-        if extreme_temp > 0 or extreme_hum > 0:
-            results["range_violations"] += int(extreme_temp + extreme_hum)
-            results["details"].append(f"Sensors have extreme readings: {extreme_temp} temp / {extreme_hum} humidity.")
-
-        # Timestamp validation
-        invalid_ts = pd.to_datetime(sensor_df["timestamp"], errors="coerce").isnull().sum()
-        if invalid_ts > 0:
-            results["date_violations"] += int(invalid_ts)
-            results["details"].append(f"Sensors have {invalid_ts} unparseable timestamps.")
-
-    # Arbitrage -> Shipments & Markets
-    if not arb_df.empty:
-        inv_arb_ship = (~arb_df["shipment_id"].isin(valid_ship_ids)).sum()
-        if inv_arb_ship > 0:
-            results["foreign_key_violations"] += int(inv_arb_ship)
-            results["details"].append(f"Arbitrage has {inv_arb_ship} unlinked shipment IDs.")
+        if "timestamp" in sensor_df.columns:
+            invalid_ts = pd.to_datetime(sensor_df["timestamp"], errors="coerce").isnull().sum()
+            if invalid_ts > 0:
+                results["date_violations"] += int(invalid_ts)
+                results["details"].append(f"Sensors have {invalid_ts} unparseable timestamps.")
 
     total_issues = (
         results["foreign_key_violations"] +
         results["null_value_counts"] +
         results["duplicate_counts"] +
         results["range_violations"] +
-        results["date_violations"]
+        results["date_violations"] +
+        results["categorical_violations"]
     )
     results["is_valid"] = (total_issues == 0)
     results["total_records"] = sum(s["record_count"] for s in results["table_summaries"].values())
     results["completeness_pct"] = (
         100.0 if total_issues == 0
-        else round(100.0 - (total_issues / max(1, results["total_records"])) * 100, 2)
+        else round(max(0.0, 100.0 - (total_issues / max(1, results["total_records"])) * 100), 2)
     )
 
     return results
