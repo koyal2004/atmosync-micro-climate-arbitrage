@@ -103,6 +103,11 @@ def render():
             & (filtered_sensors["timestamp_dt"].dt.date <= end_d)
         ]
 
+    # Handle empty filter scenario gracefully
+    if filtered_sensors.empty:
+        st.warning("⚠️ No sensor telemetry records match your selected filter criteria. Please broaden your selection.")
+        return
+
     # ------------------------------------------------------------------
     # Sensor KPIs (Computed dynamically from filtered records)
     # ------------------------------------------------------------------

@@ -16,6 +16,7 @@ from utils.charts import (
     create_donut_chart, THEME_LAYOUT
 )
 from modules.anomaly_detection import run_sensor_anomaly_detection
+from modules.analytics import compute_weather_shipment_relationship
 from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL
 
 
@@ -223,6 +224,50 @@ def render():
                                       color_map={"Normal": COLORS["info"], "Anomaly": COLORS["critical"]},
                                       title="8. Isolation Forest ML Sensor Anomaly Detection Distribution")
         st.plotly_chart(fig_ml_bar, use_container_width=True)
+
+    # 9. Micro-Climate Telemetry vs. Shipment Transit Conditions
+    st.markdown("---")
+    st.subheader("🚚 Micro-Climate Telemetry vs. Consignment Shipment Conditions")
+    st.caption("Demonstrating the direct correlation between internal reefer atmosphere and fleet shipment health status.")
+
+    weather_rel_df = compute_weather_shipment_relationship(filtered_sensor, shipments_df)
+    if not weather_rel_df.empty:
+        w_c1, w_c2 = st.columns(2)
+        with w_c1:
+            fig_rel_temp = go.Figure()
+            fig_rel_temp.add_trace(go.Bar(
+                x=weather_rel_df["shipment_status"], y=weather_rel_df["avg_temperature"],
+                name="Avg Temp (°C)", marker_color=COLORS["primary"]
+            ))
+            fig_rel_temp.add_trace(go.Bar(
+                x=weather_rel_df["shipment_status"], y=weather_rel_df["max_temperature"],
+                name="Peak Temp (°C)", marker_color=COLORS["critical"]
+            ))
+            fig_rel_temp.update_layout(
+                barmode="group",
+                title="9. Thermal Exposure Profile across Shipment Statuses",
+                yaxis_title="Temperature (°C)",
+                **THEME_LAYOUT
+            )
+            st.plotly_chart(fig_rel_temp, use_container_width=True)
+
+        with w_c2:
+            fig_rel_vibe = go.Figure()
+            fig_rel_vibe.add_trace(go.Bar(
+                x=weather_rel_df["shipment_status"], y=weather_rel_df["avg_vibration"],
+                name="Avg Vibration (g)", marker_color=COLORS["info"]
+            ))
+            fig_rel_vibe.add_trace(go.Bar(
+                x=weather_rel_df["shipment_status"], y=weather_rel_df["max_vibration"],
+                name="Peak Shock (g)", marker_color=COLORS["warning"]
+            ))
+            fig_rel_vibe.update_layout(
+                barmode="group",
+                title="10. Mechanical Vibration Exposure across Shipment Statuses",
+                yaxis_title="Vibration Acceleration (g)",
+                **THEME_LAYOUT
+            )
+            st.plotly_chart(fig_rel_vibe, use_container_width=True)
 
 
 if __name__ == "__main__":

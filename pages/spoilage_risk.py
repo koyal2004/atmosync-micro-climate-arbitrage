@@ -21,6 +21,7 @@ from utils.charts import (
     create_line_chart, THEME_LAYOUT
 )
 from modules.risk_engine import calculate_shipment_risk, get_risk_summary
+from modules.analytics import compute_spoilage_factor_breakdown
 from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL
 
 
@@ -255,6 +256,46 @@ def render():
         )
         fig_shelf.update_layout(**THEME_LAYOUT)
         st.plotly_chart(fig_shelf, use_container_width=True)
+
+    # ------------------------------------------------------------------
+    # Contributing Stressor Decomposition & Primary Driver Analysis
+    # ------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🔬 Environmental Contributing Stressors Decomposition")
+    st.caption("Decomposing composite risk scores into temperature, humidity, and kinetic vibration stress vectors.")
+
+    factor_data = compute_spoilage_factor_breakdown(filtered_risk)
+    sb_c1, sb_c2, sb_c3, sb_c4 = st.columns(4)
+    with sb_c1:
+        st.metric("Thermal Stress Vector", f"{factor_data['temp_contrib_pct']}%", f"Mean: {factor_data['mean_temp_score']} pts")
+    with sb_c2:
+        st.metric("Moisture Stress Vector", f"{factor_data['hum_contrib_pct']}%", f"Mean: {factor_data['mean_hum_score']} pts")
+    with sb_c3:
+        st.metric("Kinetic Shock Vector", f"{factor_data['vibe_contrib_pct']}%", f"Mean: {factor_data['mean_vibe_score']} pts")
+    with sb_c4:
+        st.metric("Primary Degradation Driver", factor_data["primary_stressor"])
+
+    top_comm_stress = filtered_risk.groupby("commodity_name")[["temperature_score", "humidity_score", "vibration_score"]].mean().reset_index().head(8)
+    fig_stress_comp = go.Figure()
+    fig_stress_comp.add_trace(go.Bar(
+        x=top_comm_stress["commodity_name"], y=top_comm_stress["temperature_score"],
+        name="Temperature Exposure (0-50 pts)", marker_color=COLORS["critical"]
+    ))
+    fig_stress_comp.add_trace(go.Bar(
+        x=top_comm_stress["commodity_name"], y=top_comm_stress["humidity_score"],
+        name="Humidity Condensation (0-25 pts)", marker_color=COLORS["secondary"]
+    ))
+    fig_stress_comp.add_trace(go.Bar(
+        x=top_comm_stress["commodity_name"], y=top_comm_stress["vibration_score"],
+        name="Vibration Impact (0-15 pts)", marker_color=COLORS["info"]
+    ))
+    fig_stress_comp.update_layout(
+        barmode="stack",
+        title="8. Biological Degradation Stressor Composition Across Varieties",
+        yaxis_title="Cumulative Score Points",
+        **THEME_LAYOUT
+    )
+    st.plotly_chart(fig_stress_comp, use_container_width=True)
 
     # ------------------------------------------------------------------
     # Spoilage Risk Registry Table (Full Specification Display)

@@ -11,8 +11,12 @@ import pandas as pd
 from datetime import datetime
 from database.database import load_table
 from utils.helpers import render_kpi_card, format_currency, format_quantity, get_status_badge
-from utils.charts import create_line_chart, create_pydeck_route_map
+from utils.charts import (
+    create_line_chart, create_pydeck_route_map, create_donut_chart,
+    create_scatter_plot, THEME_LAYOUT
+)
 from modules.risk_engine import calculate_shipment_risk
+from modules.analytics import compute_shipment_performance_analytics
 from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL
 
 
@@ -127,6 +131,32 @@ def render():
             )
 
     # ------------------------------------------------------------------
+    # Fleet Shipment Performance Analytics
+    # ------------------------------------------------------------------
+    perf_metrics = compute_shipment_performance_analytics(display_df)
+    with st.expander("📊 Fleet Logistics Performance Analytics (On-Time Rates & Unit Costs)", expanded=False):
+        st.markdown("Detailed breakdown of fleet logistics health, delivery efficiency, and transit cost-per-ton-km.")
+        pm1, pm2, pm3, pm4 = st.columns(4)
+        with pm1:
+            st.metric("Delivered Completion Rate", f"{perf_metrics['on_time_rate_pct']}%", delta="Historical completed")
+        with pm2:
+            st.metric("Corridor Delay Ratio", f"{perf_metrics['delay_rate_pct']}%", delta="Delayed runs", delta_color="inverse")
+        with pm3:
+            st.metric("Thermal Risk Incidence", f"{perf_metrics['at_risk_rate_pct']}%", delta="Cold-chain breach", delta_color="inverse")
+        with pm4:
+            st.metric("Avg Logistics Cost", f"₹{perf_metrics['avg_cost_per_ton_km']}/ton-km", delta="Freight unit cost")
+
+        p_r1, p_r2 = st.columns(2)
+        with p_r1:
+            stat_colors = {"In Transit": COLORS["info"], "Delivered": COLORS["success"], "At Risk": COLORS["critical"], "Delayed": COLORS["warning"], "Completed": COLORS["primary"]}
+            fig_perf_status = create_donut_chart(display_df, "shipment_status", title="Fleet Operational Status Distribution", color_map=stat_colors)
+            st.plotly_chart(fig_perf_status, use_container_width=True)
+        with p_r2:
+            sample_sub = display_df.sample(n=min(300, len(display_df)), random_state=42) if len(display_df) > 0 else display_df
+            fig_perf_scatter = create_scatter_plot(sample_sub, "distance_km", "transport_cost", color_col="shipment_status", title="Corridor Distance (km) vs. Transport Cost (₹)")
+            st.plotly_chart(fig_perf_scatter, use_container_width=True)
+
+    # ------------------------------------------------------------------
     # Search & Multi-Factor Filters
     # ------------------------------------------------------------------
     st.markdown("### 🔍 Search & Filter Shipments")
@@ -202,7 +232,7 @@ def render():
     st.subheader(f"📋 Consignment Registry ({len(filtered_table):,} records found)")
 
     if filtered_table.empty:
-        st.info("No shipments match your search and filter criteria. Please clear or broaden filters.")
+        st.warning("⚠️ No shipments match your search and filter criteria. Please broaden your selection.")
         return
 
     # Complete Required Columns per Specification:
