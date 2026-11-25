@@ -157,10 +157,12 @@ atmosync/
 ├── tests/
 │   ├── __init__.py                     # Package init
 │   ├── test_database.py                # SQLite connectivity, schema, and CRUD tests (11 tests)
+│   ├── test_backend_reliability.py     # Caching, duplicate-safe import & CSV upload validation (5 tests)
 │   ├── test_data_generator.py          # Synthetic dataset volume, linkage, and range tests (13 tests)
 │   ├── test_data_validation.py         # Data quality, temporal ordering, and cross-table tests (5 tests)
 │   ├── test_advanced_analytics.py      # Performance metrics, spoilage breakdown, and arbitrage tests (5 tests)
-│   └── test_exports.py                 # PDF, Excel, and ZIP export pipeline validation tests (3 tests)
+│   ├── test_exports.py                 # Filtered reports, PDF, Excel, and ZIP export tests (9 tests)
+│   └── test_app_integration.py         # End-to-end Streamlit AppTest across all 8 modules (11 tests)
 └── utils/
     ├── __init__.py                     # Package init
     ├── charts.py                       # Plotly & PyDeck chart generation utilities
@@ -212,12 +214,14 @@ The repository features an automated verification suite executed via `pytest`:
 pytest
 ```
 
-**Verification Results (37 Passing Unit Tests):**
+**Verification Results (59 Passing Automated Tests):**
 - **Database Architecture Tests (`tests/test_database.py`):** 11 tests verifying schema creation, foreign key constraints, table queries, and transaction rollbacks.
+- **Backend Reliability & CSV Import Tests (`tests/test_backend_reliability.py`):** 5 tests verifying table caching/invalidation, schema-preserving replace, duplicate-safe upserts, and malformed CSV validation.
 - **Data Generator Tests (`tests/test_data_generator.py`):** 13 tests validating deterministic generation, non-null primary keys, commodity price constraints ($P_{\min} \le P_{\text{modal}} \le P_{\max}$), and container-telemetry links.
 - **Data Validation Tests (`tests/test_data_validation.py`):** 5 tests verifying null imputation, duplicate key removal, temporal date consistency (`departure <= arrival`), numeric bounds, and cross-table relationships.
 - **Advanced Analytics Tests (`tests/test_advanced_analytics.py`):** 5 tests verifying logistics performance rates, spoilage stress factor breakdowns, weather-shipment correlation, and non-overlapping arbitrage net benefit calculations.
-- **Export Pipelines (`tests/test_exports.py`):** 3 tests verifying valid ZIP archive creation, OpenPyXL multi-sheet Excel generation, and ReportLab PDF document compilation.
+- **Report Generation & Export Pipelines (`tests/test_exports.py`):** 9 tests verifying all 5 filtered report types, empty filter states, ZIP archive creation, OpenPyXL workbooks with metadata, and ReportLab PDF compilation.
+- **Streamlit App Integration (`tests/test_app_integration.py`):** 11 end-to-end `AppTest` checks verifying `app.py`, all 8 page modules, and interactive filter updates render with zero runtime exceptions.
 - **Static Syntax & AST Parsing:** Automated AST traversal confirming 100% syntax compliance across all Python modules with zero import warnings.
 
 ---

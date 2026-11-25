@@ -180,11 +180,20 @@ def compute_weather_shipment_relationship(
     if sensor_df.empty or shipments_df.empty:
         return pd.DataFrame()
 
-    merged = sensor_df.merge(
-        shipments_df[["shipment_id", "shipment_status", "distance_km"]],
-        on="shipment_id",
-        how="inner"
-    )
+    cols_to_merge = ["shipment_id"]
+    if "shipment_status" not in sensor_df.columns:
+        cols_to_merge.append("shipment_status")
+    if "distance_km" not in sensor_df.columns and "distance_km" in shipments_df.columns:
+        cols_to_merge.append("distance_km")
+
+    if len(cols_to_merge) > 1:
+        merged = sensor_df.merge(
+            shipments_df[cols_to_merge].drop_duplicates(subset=["shipment_id"]),
+            on="shipment_id",
+            how="inner"
+        )
+    else:
+        merged = sensor_df.dropna(subset=["shipment_status"]).copy()
 
     if merged.empty:
         return pd.DataFrame()

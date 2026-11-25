@@ -485,7 +485,7 @@ def render():
     )
 
     with st.expander("⚠️ Reset Database & Regenerate Synthetic Records (Requires Confirmation)"):
-        st.error("Warning: This will truncate all tables in `atmosync.db` and synthesize new linked records.")
+        st.warning("Warning: This will truncate all tables in `atmosync.db` and synthesize new linked records.")
         confirm = st.checkbox("I confirm I want to reset and regenerate the database.", key="chk_confirm_reset")
 
         if st.button("Reset Database & Regenerate Records", disabled=not confirm, type="primary", key="btn_reset_db"):

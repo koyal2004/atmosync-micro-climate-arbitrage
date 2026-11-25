@@ -79,12 +79,10 @@ def create_dual_axis_chart(df: pd.DataFrame, x_col: str, y1_col: str, y2_col: st
         x=df[x_col], y=df[y2_col], name=y2_name, yaxis="y2",
         line={"color": COLORS["secondary"], "width": 2, "dash": "dot"}
     ))
-    fig.update_layout(
-        title=title,
-        yaxis={"title": y1_name, "title_font": {"color": COLORS["critical"]}},
-        yaxis2={"title": y2_name, "title_font": {"color": COLORS["secondary"]}, "overlaying": "y", "side": "right"},
-        **THEME_LAYOUT
-    )
+    layout_cfg = {**THEME_LAYOUT}
+    layout_cfg["yaxis"] = {**THEME_LAYOUT.get("yaxis", {}), "title": y1_name, "title_font": {"color": COLORS["critical"]}}
+    layout_cfg["yaxis2"] = {"title": y2_name, "title_font": {"color": COLORS["secondary"]}, "overlaying": "y", "side": "right"}
+    fig.update_layout(title=title, **layout_cfg)
     return fig
 
 def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str, color_col: Optional[str] = None,
