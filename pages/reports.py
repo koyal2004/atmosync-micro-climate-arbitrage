@@ -27,7 +27,9 @@ from modules.data_cleaning import (
 )
 from modules.risk_engine import calculate_shipment_risk, get_risk_summary
 from modules.arbitrage_engine import evaluate_arbitrage_opportunities
-from utils.export import create_datasets_zip, create_excel_workbook, generate_pdf_report
+from utils.export import (
+    create_datasets_zip, create_excel_workbook, generate_pdf_report, build_filtered_report
+)
 from utils.helpers import render_kpi_card
 
 
@@ -272,10 +274,98 @@ def render():
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Section 4: Multi-Format Data Downloads & PDF Analytical Dossier
+    # Section 4: Filtered Analytical Report Generator & Export Hub
     # ------------------------------------------------------------------
-    st.subheader("📥 Data Export & Analytical Report Hub")
-    st.caption("All exports are dynamically compiled from live SQLite records with embedded provenance disclaimers.")
+    st.subheader("📥 Filtered Analytical Report Generator & Export Hub")
+    st.caption("Generate domain-specific analytical reports from live SQLite records with date/category filters and synthetic-data provenance.")
+
+    report_types = [
+        "Shipment Summary",
+        "IoT Sensor Analytics",
+        "Commodity Price Analysis",
+        "Spoilage Risk Summary",
+        "Market Arbitrage Opportunities"
+    ]
+
+    rf1, rf2, rf3 = st.columns([1.4, 1.3, 1.3])
+    with rf1:
+        selected_rep_type = st.selectbox("Select Analytical Report:", report_types, index=0, key="rep_gen_type")
+
+    # Determine appropriate date bounds & category options dynamically
+    with rf2:
+        if selected_rep_type in ["Shipment Summary", "Spoilage Risk Summary", "Market Arbitrage Opportunities"]:
+            dt_col = pd.to_datetime(datasets["shipments"]["departure_date"], errors="coerce").dropna() if not datasets["shipments"].empty else pd.Series(dtype="datetime64[ns]")
+        elif selected_rep_type == "IoT Sensor Analytics":
+            dt_col = pd.to_datetime(datasets["sensor_readings"]["timestamp"], errors="coerce").dropna() if not datasets["sensor_readings"].empty else pd.Series(dtype="datetime64[ns]")
+        else:
+            dt_col = pd.to_datetime(datasets["market_prices"]["date"], errors="coerce").dropna() if not datasets["market_prices"].empty else pd.Series(dtype="datetime64[ns]")
+
+        if not dt_col.empty:
+            rep_date_range = st.date_input(
+                "Report Date Range:",
+                value=(dt_col.min().date(), dt_col.max().date()),
+                min_value=dt_col.min().date(),
+                max_value=dt_col.max().date(),
+                key=f"rep_date_range_{selected_rep_type}"
+            )
+        else:
+            rep_date_range = None
+
+    with rf3:
+        if selected_rep_type == "Shipment Summary":
+            cat_opts = ["All", "In Transit", "Delivered", "Delayed", "At Risk", "Completed"]
+        elif selected_rep_type == "IoT Sensor Analytics":
+            cat_opts = ["All", "Normal", "Warning", "Critical"]
+        elif selected_rep_type == "Commodity Price Analysis":
+            cat_opts = ["All", "Fruit", "Vegetable"]
+        elif selected_rep_type == "Spoilage Risk Summary":
+            cat_opts = ["All", "Critical", "High", "Moderate", "Low"]
+        else:
+            cat_opts = ["All", "Profitable Only", "Unprofitable Only"]
+        selected_rep_cat = st.selectbox("Category / Status Filter:", cat_opts, index=0, key=f"rep_cat_{selected_rep_type}")
+
+    rep_df, rep_summary, rep_scope = build_filtered_report(
+        selected_rep_type, datasets, date_range=rep_date_range, category_filter=selected_rep_cat
+    )
+
+    if rep_df.empty:
+        st.warning(f"⚠️ No records match the selected filters for '{selected_rep_type}'. Please broaden your date range or category selection.")
+    else:
+        # Display computed summary metrics
+        sm_cols = st.columns(len(rep_summary))
+        for idx, (m_label, m_val) in enumerate(rep_summary.items()):
+            with sm_cols[idx]:
+                st.metric(m_label, f"{m_val:,}" if isinstance(m_val, (int, float)) else str(m_val))
+
+        st.dataframe(rep_df.head(100), use_container_width=True, height=240)
+        st.caption(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Scope: {rep_scope} | {PERSISTENT_DISCLAIMER}")
+
+        slug = selected_rep_type.lower().replace(" ", "_")
+        date_stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        dl_c1, dl_c2 = st.columns(2)
+        with dl_c1:
+            rep_csv = rep_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label=f"⬇️ Download {selected_rep_type} Report (.csv)",
+                data=rep_csv,
+                file_name=f"AtmoSync_{slug}_{date_stamp}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"dl_rep_csv_{slug}"
+            )
+        with dl_c2:
+            rep_xlsx = create_excel_workbook({selected_rep_type[:31]: rep_df}, filter_summary=rep_scope)
+            st.download_button(
+                label=f"⬇️ Download {selected_rep_type} Report (.xlsx)",
+                data=rep_xlsx,
+                file_name=f"AtmoSync_{slug}_{date_stamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"dl_rep_xlsx_{slug}"
+            )
+
+    st.markdown("---")
+    st.markdown("#### 📦 Executive PDF Dossier & Bulk Dataset Archives")
 
     col_d1, col_d2 = st.columns(2)
 

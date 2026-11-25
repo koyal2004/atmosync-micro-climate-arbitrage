@@ -7,7 +7,7 @@ import io
 import zipfile
 import pandas as pd
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
@@ -38,14 +38,31 @@ DISCLAIMER:
     buf.seek(0)
     return buf.getvalue()
 
-def create_excel_workbook(datasets: Dict[str, pd.DataFrame]) -> bytes:
-    """Create multi-sheet Excel workbook using OpenPyXL."""
+def create_excel_workbook(
+    datasets: Dict[str, pd.DataFrame],
+    filter_summary: str = "All Records (Unfiltered)"
+) -> bytes:
+    """Create multi-sheet Excel workbook using OpenPyXL with embedded metadata and disclaimer."""
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        meta_df = pd.DataFrame([
+            {"Field": "Application", "Value": f"{APP_NAME} - {TAGLINE}"},
+            {"Field": "Organization", "Value": ORGANIZATION},
+            {"Field": "Report Generated At", "Value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            {"Field": "Filter Scope", "Value": filter_summary},
+            {"Field": "Data Provenance Disclaimer", "Value": PERSISTENT_DISCLAIMER},
+        ])
+        meta_df.to_excel(writer, sheet_name="Report_Metadata", index=False)
+
         for name, df in datasets.items():
             # Truncate sheet name to 31 chars (Excel limit)
             sheet_title = name[:31]
-            df.head(2500).to_excel(writer, sheet_name=sheet_title, index=False)
+            if df is not None and not df.empty:
+                df.head(5000).to_excel(writer, sheet_name=sheet_title, index=False)
+            else:
+                pd.DataFrame([{"Notice": "No records matched the selected filter criteria."}]).to_excel(
+                    writer, sheet_name=sheet_title, index=False
+                )
     buf.seek(0)
     return buf.getvalue()
 
@@ -115,8 +132,11 @@ def generate_pdf_report(
     story = []
 
     # Title & Metadata Banner
+    gen_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filter_desc = summary_metrics.get("filter_scope", "Full Database Scope")
     story.append(Paragraph(f"{APP_NAME} &mdash; Executive Intelligence Report", title_style))
     story.append(Paragraph(f"{TAGLINE.upper()} | {ORGANIZATION}", subtitle_style))
+    story.append(Paragraph(f"<b>Generated:</b> {gen_ts} &nbsp;|&nbsp; <b>Scope:</b> {filter_desc}", body_style))
     story.append(Spacer(1, 4))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#12B8A6"), spaceBefore=4, spaceAfter=10))
 
@@ -139,7 +159,7 @@ def generate_pdf_report(
         ["Average Reefer Temperature", f"{summary_metrics.get('avg_temp', 0):.1f} °C", "Nominal Band"],
         ["Average Relative Humidity", f"{summary_metrics.get('avg_hum', 0):.1f} %", "Controlled"],
         ["Arbitrage Opportunities Identified", f"{summary_metrics.get('total_arbitrage', 0):,}", "Available"],
-        ["Peak Estimated Net Advantage", f"₹{summary_metrics.get('max_benefit', 0):,.2f}", "Profitable Target"]
+        ["Peak Estimated Net Advantage", f"Rs. {summary_metrics.get('max_benefit', 0):,.2f}", "Profitable Target"]
     ]
     t_kpi = Table(kpi_data, colWidths=[200, 150, 160])
     t_kpi.setStyle(TableStyle([
@@ -177,8 +197,8 @@ def generate_pdf_report(
                 str(row.get("commodity_name", ""))[:14],
                 str(row.get("current_destination_name", row.get("source_market_name", "")))[:14],
                 str(row.get("alternative_market_name", ""))[:14],
-                f"+₹{row.get('gross_price_advantage', 0):.2f}",
-                f"₹{row.get('estimated_net_benefit', 0):,.0f}"
+                f"+Rs. {row.get('gross_price_advantage', 0):.2f}",
+                f"Rs. {row.get('estimated_net_benefit', 0):,.0f}"
             ])
         t_arb = Table(arb_rows, colWidths=[65, 95, 95, 100, 65, 90])
         t_arb.setStyle(TableStyle([
@@ -212,3 +232,159 @@ def generate_pdf_report(
     doc.build(story)
     buf.seek(0)
     return buf.getvalue()
+
+
+def build_filtered_report(
+    report_type: str,
+    datasets: Dict[str, pd.DataFrame],
+    date_range: Optional[Tuple[Any, Any]] = None,
+    category_filter: str = "All"
+) -> Tuple[pd.DataFrame, Dict[str, Any], str]:
+    """
+    Dynamically builds one of five structured analytical reports from live application datasets,
+    applying date range and category/status filters consistently.
+    Returns (report_df, summary_dict, filter_scope_label).
+    """
+    commodities_df = datasets.get("commodities", pd.DataFrame())
+    markets_df = datasets.get("markets", pd.DataFrame())
+    shipments_df = datasets.get("shipments", pd.DataFrame())
+    sensor_df = datasets.get("sensor_readings", pd.DataFrame())
+    prices_df = datasets.get("market_prices", pd.DataFrame())
+
+    comm_names = dict(zip(commodities_df["commodity_id"], commodities_df["commodity_name"])) if not commodities_df.empty else {}
+    comm_cats = dict(zip(commodities_df["commodity_id"], commodities_df["category"])) if not commodities_df.empty else {}
+    mkt_names = dict(zip(markets_df["market_id"], markets_df["market_name"])) if not markets_df.empty else {}
+    mkt_states = dict(zip(markets_df["market_id"], markets_df["state"])) if not markets_df.empty else {}
+
+    date_desc = "All Dates"
+    if date_range and len(date_range) == 2:
+        date_desc = f"{date_range[0]} to {date_range[1]}"
+    filter_label = f"{report_type} | {date_desc} | Filter: {category_filter}"
+
+    def _apply_date_filter(df: pd.DataFrame, col: str) -> pd.DataFrame:
+        if df.empty or col not in df.columns or not date_range or len(date_range) != 2:
+            return df
+        dt_series = pd.to_datetime(df[col], errors="coerce").dt.date
+        start_d, end_d = date_range
+        return df[(dt_series >= start_d) & (dt_series <= end_d)]
+
+    if report_type == "Shipment Summary":
+        df = shipments_df.copy()
+        df = _apply_date_filter(df, "departure_date")
+        if not df.empty:
+            df["commodity_name"] = df["commodity_id"].map(comm_names).fillna("Unknown")
+            df["source_market"] = df["source_market_id"].map(mkt_names).fillna("Origin")
+            df["destination_market"] = df["destination_market_id"].map(mkt_names).fillna("Destination")
+            if category_filter != "All":
+                df = df[df["shipment_status"] == category_filter]
+            cols = [
+                "shipment_id", "container_id", "commodity_name", "source_market",
+                "destination_market", "departure_date", "expected_arrival_date",
+                "quantity_kg", "distance_km", "transport_cost", "shipment_status",
+                "estimated_remaining_shelf_life"
+            ]
+            df = df[[c for c in cols if c in df.columns]]
+        summary = {
+            "Records": len(df),
+            "Total Freight (kg)": round(float(df["quantity_kg"].sum()), 1) if not df.empty else 0.0,
+            "Avg Distance (km)": round(float(df["distance_km"].mean()), 1) if not df.empty else 0.0,
+            "Total Transport Cost (Rs.)": round(float(df["transport_cost"].sum()), 2) if not df.empty else 0.0,
+        }
+        return df, summary, filter_label
+
+    elif report_type == "IoT Sensor Analytics":
+        df = sensor_df.copy()
+        df = _apply_date_filter(df, "timestamp")
+        if not df.empty:
+            if not shipments_df.empty:
+                ship_comm = dict(zip(shipments_df["shipment_id"], shipments_df["commodity_id"].map(comm_names)))
+                df["commodity_name"] = df["shipment_id"].map(ship_comm).fillna("Perishable")
+            if category_filter != "All":
+                df = df[df["sensor_status"] == category_filter]
+            cols = [
+                "sensor_id", "shipment_id", "container_id", "commodity_name",
+                "timestamp", "temperature", "humidity", "vibration", "sensor_status"
+            ]
+            df = df[[c for c in cols if c in df.columns]]
+        summary = {
+            "Telemetry Packets": len(df),
+            "Avg Temp (C)": round(float(df["temperature"].mean()), 1) if not df.empty else 0.0,
+            "Avg Humidity (%)": round(float(df["humidity"].mean()), 1) if not df.empty else 0.0,
+            "Critical Readings": int((df["sensor_status"] == "Critical").sum()) if not df.empty else 0,
+        }
+        return df, summary, filter_label
+
+    elif report_type == "Commodity Price Analysis":
+        df = prices_df.copy()
+        df = _apply_date_filter(df, "date")
+        if not df.empty:
+            df["commodity_name"] = df["commodity_id"].map(comm_names).fillna("Unknown")
+            df["category"] = df["commodity_id"].map(comm_cats).fillna("Vegetable")
+            df["market_name"] = df["market_id"].map(mkt_names).fillna("Mandi")
+            df["state"] = df["market_id"].map(mkt_states).fillna("India")
+            if category_filter != "All":
+                df = df[df["category"] == category_filter]
+            cols = [
+                "price_id", "date", "commodity_name", "category", "market_name",
+                "state", "minimum_price", "modal_price", "maximum_price",
+                "arrival_quantity", "demand_index", "supply_index"
+            ]
+            df = df[[c for c in cols if c in df.columns]]
+        summary = {
+            "Price Observations": len(df),
+            "Avg Modal Price (Rs./kg)": round(float(df["modal_price"].mean()), 2) if not df.empty else 0.0,
+            "Total Arrivals (kg)": round(float(df["arrival_quantity"].sum()), 1) if not df.empty else 0.0,
+            "Unique Mandis": int(df["market_name"].nunique()) if not df.empty and "market_name" in df.columns else 0,
+        }
+        return df, summary, filter_label
+
+    elif report_type == "Spoilage Risk Summary":
+        from modules.risk_engine import calculate_shipment_risk
+        ship_filtered = _apply_date_filter(shipments_df.copy(), "departure_date")
+        df = calculate_shipment_risk(ship_filtered, commodities_df, sensor_df)
+        if not df.empty:
+            if category_filter != "All":
+                df = df[df["risk_category"] == category_filter]
+            cols = [
+                "shipment_id", "container_id", "commodity_name", "shipment_status",
+                "departure_date", "temperature_exposure", "humidity_exposure",
+                "vibration_exposure", "estimated_remaining_shelf_life",
+                "risk_score", "risk_category", "recommended_action"
+            ]
+            df = df[[c for c in cols if c in df.columns]]
+        summary = {
+            "Consignments Scored": len(df),
+            "Avg Risk Score (0-100)": round(float(df["risk_score"].mean()), 1) if not df.empty else 0.0,
+            "High/Critical Count": int(df["risk_category"].isin(["High", "Critical"]).sum()) if not df.empty else 0,
+            "Avg Shelf Life (Days)": round(float(df["estimated_remaining_shelf_life"].mean()), 1) if not df.empty else 0.0,
+        }
+        return df, summary, filter_label
+
+    elif report_type == "Market Arbitrage Opportunities":
+        from modules.risk_engine import calculate_shipment_risk
+        from modules.arbitrage_engine import evaluate_arbitrage_opportunities
+        ship_filtered = _apply_date_filter(shipments_df.copy(), "departure_date")
+        risk_df = calculate_shipment_risk(ship_filtered, commodities_df, sensor_df)
+        df = evaluate_arbitrage_opportunities(ship_filtered, commodities_df, markets_df, prices_df, risk_df)
+        if not df.empty:
+            if category_filter == "Profitable Only":
+                df = df[df["is_profitable"] == True]
+            elif category_filter == "Unprofitable Only":
+                df = df[df["is_profitable"] == False]
+            cols = [
+                "opportunity_id", "shipment_id", "commodity_name",
+                "source_market_name", "current_destination_name", "alternative_market_name",
+                "quantity_kg", "source_market_price", "destination_market_price",
+                "gross_advantage", "transportation_cost", "handling_cost",
+                "estimated_quality_loss_cost", "estimated_net_benefit", "recommendation_status"
+            ]
+            df = df[[c for c in cols if c in df.columns]]
+        summary = {
+            "Scenarios Evaluated": len(df),
+            "Profitable Leads": int((df["estimated_net_benefit"] > 0).sum()) if not df.empty else 0,
+            "Peak Net Benefit (Rs.)": round(float(df["estimated_net_benefit"].max()), 2) if not df.empty else 0.0,
+            "Total Potential Gain (Rs.)": round(float(df[df["estimated_net_benefit"] > 0]["estimated_net_benefit"].sum()), 2) if not df.empty else 0.0,
+        }
+        return df, summary, filter_label
+
+    return pd.DataFrame(), {}, filter_label
