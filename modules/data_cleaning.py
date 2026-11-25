@@ -5,12 +5,20 @@ null values, duplicate keys, categorical validation, temporal/date logic,
 and provides robust sanitization and preprocessing across all agricultural datasets.
 """
 
+import io
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
+from database.database import TABLE_SCHEMAS
+
 logger = logging.getLogger("atmosync.data_cleaning")
+
+
+def _safe_numeric_series(series: pd.Series, default: float) -> pd.Series:
+    """Coerce values to numeric safely, filling unparseable strings or NaNs with default."""
+    return pd.to_numeric(series, errors="coerce").fillna(default)
 
 # Categorical domain standards
 COMMODITY_CATEGORIES = {"Fruit", "Vegetable"}
@@ -67,13 +75,13 @@ def clean_dataset(
             )
 
         if "base_price_per_kg" in cleaned.columns:
-            cleaned["base_price_per_kg"] = cleaned["base_price_per_kg"].fillna(30.0).apply(lambda x: max(1.0, float(x)))
+            cleaned["base_price_per_kg"] = _safe_numeric_series(cleaned["base_price_per_kg"], 30.0).clip(lower=1.0)
         if "optimal_temperature" in cleaned.columns:
-            cleaned["optimal_temperature"] = cleaned["optimal_temperature"].fillna(10.0).astype(float).clip(-10.0, 45.0)
+            cleaned["optimal_temperature"] = _safe_numeric_series(cleaned["optimal_temperature"], 10.0).clip(-10.0, 45.0)
         if "minimum_temperature" in cleaned.columns:
-            cleaned["minimum_temperature"] = cleaned["minimum_temperature"].fillna(5.0).astype(float).clip(-15.0, 40.0)
+            cleaned["minimum_temperature"] = _safe_numeric_series(cleaned["minimum_temperature"], 5.0).clip(-15.0, 40.0)
         if "maximum_temperature" in cleaned.columns:
-            cleaned["maximum_temperature"] = cleaned["maximum_temperature"].fillna(15.0).astype(float).clip(-5.0, 50.0)
+            cleaned["maximum_temperature"] = _safe_numeric_series(cleaned["maximum_temperature"], 15.0).clip(-5.0, 50.0)
 
         # Enforce min <= optimal <= max
         if all(c in cleaned.columns for c in ["minimum_temperature", "optimal_temperature", "maximum_temperature"]):
@@ -81,14 +89,14 @@ def clean_dataset(
             cleaned["maximum_temperature"] = np.maximum(cleaned["maximum_temperature"], cleaned["optimal_temperature"])
 
         if "optimal_humidity" in cleaned.columns:
-            cleaned["optimal_humidity"] = cleaned["optimal_humidity"].fillna(85.0).clip(10.0, 99.0)
+            cleaned["optimal_humidity"] = _safe_numeric_series(cleaned["optimal_humidity"], 85.0).clip(10.0, 99.0)
         if "maximum_humidity" in cleaned.columns:
-            cleaned["maximum_humidity"] = cleaned["maximum_humidity"].fillna(95.0).clip(10.0, 100.0)
+            cleaned["maximum_humidity"] = _safe_numeric_series(cleaned["maximum_humidity"], 95.0).clip(10.0, 100.0)
         if "optimal_humidity" in cleaned.columns and "maximum_humidity" in cleaned.columns:
             cleaned["maximum_humidity"] = np.maximum(cleaned["maximum_humidity"], cleaned["optimal_humidity"]).clip(10.0, 100.0)
 
         if "estimated_shelf_life_days" in cleaned.columns:
-            cleaned["estimated_shelf_life_days"] = cleaned["estimated_shelf_life_days"].fillna(14).apply(lambda x: max(1, int(x)))
+            cleaned["estimated_shelf_life_days"] = _safe_numeric_series(cleaned["estimated_shelf_life_days"], 14.0).clip(lower=1.0).astype(int)
 
     elif table_name == "markets":
         if "market_name" in cleaned.columns:
@@ -102,19 +110,19 @@ def clean_dataset(
                 lambda m: m if m in MARKET_TYPES else "Regional APMC"
             )
         if "latitude" in cleaned.columns:
-            cleaned["latitude"] = cleaned["latitude"].fillna(19.0760).clip(-90.0, 90.0)
+            cleaned["latitude"] = _safe_numeric_series(cleaned["latitude"], 19.0760).clip(-90.0, 90.0)
         if "longitude" in cleaned.columns:
-            cleaned["longitude"] = cleaned["longitude"].fillna(72.8777).clip(-180.0, 180.0)
+            cleaned["longitude"] = _safe_numeric_series(cleaned["longitude"], 72.8777).clip(-180.0, 180.0)
         if "estimated_daily_capacity" in cleaned.columns:
-            cleaned["estimated_daily_capacity"] = cleaned["estimated_daily_capacity"].fillna(5000).apply(lambda x: max(100, int(x)))
+            cleaned["estimated_daily_capacity"] = _safe_numeric_series(cleaned["estimated_daily_capacity"], 5000.0).clip(lower=100.0).astype(int)
 
     elif table_name == "market_prices":
         if "modal_price" in cleaned.columns:
-            cleaned["modal_price"] = cleaned["modal_price"].fillna(40.0).apply(lambda x: max(1.0, float(x)))
+            cleaned["modal_price"] = _safe_numeric_series(cleaned["modal_price"], 40.0).clip(lower=1.0)
         if "minimum_price" in cleaned.columns:
-            cleaned["minimum_price"] = cleaned["minimum_price"].fillna(35.0).apply(lambda x: max(0.5, float(x)))
+            cleaned["minimum_price"] = _safe_numeric_series(cleaned["minimum_price"], 35.0).clip(lower=0.5)
         if "maximum_price" in cleaned.columns:
-            cleaned["maximum_price"] = cleaned["maximum_price"].fillna(45.0).apply(lambda x: max(1.0, float(x)))
+            cleaned["maximum_price"] = _safe_numeric_series(cleaned["maximum_price"], 45.0).clip(lower=1.0)
 
         # Strict invariant: minimum_price <= modal_price <= maximum_price
         if all(c in cleaned.columns for c in ["minimum_price", "modal_price", "maximum_price"]):
@@ -124,11 +132,11 @@ def clean_dataset(
             cleaned.loc[mask_equal, "maximum_price"] = cleaned.loc[mask_equal, "minimum_price"] + 1.0
 
         if "arrival_quantity" in cleaned.columns:
-            cleaned["arrival_quantity"] = cleaned["arrival_quantity"].fillna(1000.0).apply(lambda x: max(0.0, float(x)))
+            cleaned["arrival_quantity"] = _safe_numeric_series(cleaned["arrival_quantity"], 1000.0).clip(lower=0.0)
         if "demand_index" in cleaned.columns:
-            cleaned["demand_index"] = cleaned["demand_index"].fillna(100.0).clip(10.0, 300.0)
+            cleaned["demand_index"] = _safe_numeric_series(cleaned["demand_index"], 100.0).clip(10.0, 300.0)
         if "supply_index" in cleaned.columns:
-            cleaned["supply_index"] = cleaned["supply_index"].fillna(100.0).clip(10.0, 300.0)
+            cleaned["supply_index"] = _safe_numeric_series(cleaned["supply_index"], 100.0).clip(10.0, 300.0)
 
         # Date validation: ensure parseable ISO dates
         if "date" in cleaned.columns:
@@ -148,15 +156,15 @@ def clean_dataset(
                 lambda s: s if s in SHIPMENT_STATUSES else "In Transit"
             )
         if "quantity_kg" in cleaned.columns:
-            cleaned["quantity_kg"] = cleaned["quantity_kg"].fillna(1500.0).apply(lambda x: max(100.0, float(x)))
+            cleaned["quantity_kg"] = _safe_numeric_series(cleaned["quantity_kg"], 1500.0).clip(lower=100.0)
         if "distance_km" in cleaned.columns:
-            cleaned["distance_km"] = cleaned["distance_km"].fillna(250.0).apply(lambda x: max(10.0, float(x)))
+            cleaned["distance_km"] = _safe_numeric_series(cleaned["distance_km"], 250.0).clip(lower=10.0)
         if "transport_cost" in cleaned.columns:
-            cleaned["transport_cost"] = cleaned["transport_cost"].fillna(3000.0).apply(lambda x: max(500.0, float(x)))
+            cleaned["transport_cost"] = _safe_numeric_series(cleaned["transport_cost"], 3000.0).clip(lower=500.0)
         if "initial_quality_percentage" in cleaned.columns:
-            cleaned["initial_quality_percentage"] = cleaned["initial_quality_percentage"].fillna(95.0).clip(50.0, 100.0)
+            cleaned["initial_quality_percentage"] = _safe_numeric_series(cleaned["initial_quality_percentage"], 95.0).clip(50.0, 100.0)
         if "estimated_remaining_shelf_life" in cleaned.columns:
-            cleaned["estimated_remaining_shelf_life"] = cleaned["estimated_remaining_shelf_life"].fillna(10.0).apply(lambda x: max(0.1, float(x)))
+            cleaned["estimated_remaining_shelf_life"] = _safe_numeric_series(cleaned["estimated_remaining_shelf_life"], 10.0).clip(lower=0.1)
 
         # Date parsing and temporal consistency: departure_date <= expected_arrival_date
         if "departure_date" in cleaned.columns and "expected_arrival_date" in cleaned.columns:
@@ -184,11 +192,11 @@ def clean_dataset(
                 lambda s: s if s in SENSOR_STATUSES else "Normal"
             )
         if "temperature" in cleaned.columns:
-            cleaned["temperature"] = cleaned["temperature"].fillna(12.0).clip(-30.0, 70.0)
+            cleaned["temperature"] = _safe_numeric_series(cleaned["temperature"], 12.0).clip(-30.0, 70.0)
         if "humidity" in cleaned.columns:
-            cleaned["humidity"] = cleaned["humidity"].fillna(85.0).clip(0.0, 100.0)
+            cleaned["humidity"] = _safe_numeric_series(cleaned["humidity"], 85.0).clip(0.0, 100.0)
         if "vibration" in cleaned.columns:
-            cleaned["vibration"] = cleaned["vibration"].fillna(0.8).clip(0.0, 10.0)
+            cleaned["vibration"] = _safe_numeric_series(cleaned["vibration"], 0.8).clip(0.0, 10.0)
 
         # Timestamp format verification
         if "timestamp" in cleaned.columns:
@@ -202,13 +210,13 @@ def clean_dataset(
 
     elif table_name == "arbitrage_opportunities":
         if "quantity_kg" in cleaned.columns:
-            cleaned["quantity_kg"] = cleaned["quantity_kg"].fillna(1500.0).apply(lambda x: max(1.0, float(x)))
+            cleaned["quantity_kg"] = _safe_numeric_series(cleaned["quantity_kg"], 1500.0).clip(lower=1.0)
         if "transportation_cost" in cleaned.columns:
-            cleaned["transportation_cost"] = cleaned["transportation_cost"].fillna(2000.0).apply(lambda x: max(0.0, float(x)))
+            cleaned["transportation_cost"] = _safe_numeric_series(cleaned["transportation_cost"], 2000.0).clip(lower=0.0)
         if "handling_cost" in cleaned.columns:
-            cleaned["handling_cost"] = cleaned["handling_cost"].fillna(600.0).apply(lambda x: max(0.0, float(x)))
+            cleaned["handling_cost"] = _safe_numeric_series(cleaned["handling_cost"], 600.0).clip(lower=0.0)
         if "estimated_quality_loss" in cleaned.columns:
-            cleaned["estimated_quality_loss"] = cleaned["estimated_quality_loss"].fillna(0.05).clip(0.0, 1.0)
+            cleaned["estimated_quality_loss"] = _safe_numeric_series(cleaned["estimated_quality_loss"], 0.05).clip(0.0, 1.0)
 
         # Recompute financial invariants
         if all(c in cleaned.columns for c in ["destination_market_price", "source_market_price", "quantity_kg"]):
@@ -513,3 +521,126 @@ def get_data_quality_dataframe(report: Dict[str, Any]) -> pd.DataFrame:
             "Integrity Status": "PASS" if (summary["null_cells"] == 0 and summary["duplicate_pks"] == 0) else "FAIL"
         })
     return pd.DataFrame(rows)
+
+
+def validate_uploaded_csv(
+    file_source: Union[bytes, io.BytesIO, Any],
+    target_table: str,
+    reference_data: Optional[Dict[str, pd.DataFrame]] = None
+) -> Dict[str, Any]:
+    """
+    Validates an uploaded CSV file before processing or importing into SQLite.
+    Handles empty files, malformed CSV syntax, missing columns, invalid values,
+    duplicate primary keys, and foreign-key inconsistencies.
+    """
+    result: Dict[str, Any] = {
+        "is_valid": False,
+        "df": pd.DataFrame(),
+        "errors": [],
+        "warnings": [],
+        "summary": {
+            "raw_rows": 0,
+            "clean_rows": 0,
+            "dropped_rows": 0,
+            "missing_columns": [],
+        }
+    }
+
+    if target_table not in TABLE_SCHEMAS:
+        result["errors"].append(f"Unsupported target table '{target_table}'.")
+        return result
+
+    schema = TABLE_SCHEMAS[target_table]
+    required_cols = schema["required_cols"]
+    pk_col = schema["pk"]
+
+    # 1. Read raw bytes safely
+    try:
+        if isinstance(file_source, bytes):
+            raw_bytes = file_source
+        elif hasattr(file_source, "getvalue"):
+            raw_bytes = file_source.getvalue()
+        elif hasattr(file_source, "read"):
+            raw_bytes = file_source.read()
+            if hasattr(file_source, "seek"):
+                file_source.seek(0)
+        else:
+            result["errors"].append("Unsupported file input object.")
+            return result
+
+        if not raw_bytes or len(raw_bytes.strip()) == 0:
+            result["errors"].append("Uploaded CSV file is empty (0 bytes).")
+            return result
+    except Exception as e:
+        result["errors"].append(f"Failed to read uploaded file: {e}")
+        return result
+
+    # 2. Parse CSV safely
+    try:
+        raw_df = pd.read_csv(io.BytesIO(raw_bytes), encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            raw_df = pd.read_csv(io.BytesIO(raw_bytes), encoding="latin-1")
+            result["warnings"].append("File decoded using latin-1 fallback encoding.")
+        except Exception as e:
+            result["errors"].append(f"Invalid file encoding or unreadable CSV format: {e}")
+            return result
+    except pd.errors.EmptyDataError:
+        result["errors"].append("Uploaded CSV contains no columns or data.")
+        return result
+    except pd.errors.ParserError as e:
+        result["errors"].append(f"Malformed CSV syntax: {e}")
+        return result
+    except Exception as e:
+        result["errors"].append(f"Unexpected error parsing CSV: {e}")
+        return result
+
+    if raw_df.empty:
+        result["errors"].append("Uploaded CSV contains column headers but zero data rows.")
+        return result
+
+    raw_df.columns = [str(c).strip() for c in raw_df.columns]
+    result["summary"]["raw_rows"] = len(raw_df)
+
+    # 3. Check required columns
+    missing_cols = [c for c in required_cols if c not in raw_df.columns]
+    if missing_cols:
+        result["summary"]["missing_columns"] = missing_cols
+        result["errors"].append(
+            f"Missing required column(s) for '{target_table}': {', '.join(missing_cols)}"
+        )
+        return result
+
+    # 4. Check null or duplicate primary keys before cleaning
+    null_pks = int(raw_df[pk_col].isnull().sum())
+    dup_pks = int(raw_df.dropna(subset=[pk_col]).duplicated(subset=[pk_col]).sum())
+    null_cells = int(raw_df[required_cols].isnull().sum().sum())
+
+    if null_pks > 0:
+        result["warnings"].append(f"Removed {null_pks} row(s) with missing primary key '{pk_col}'.")
+    if dup_pks > 0:
+        result["warnings"].append(f"Removed {dup_pks} duplicate record(s) sharing '{pk_col}'.")
+    if null_cells > null_pks:
+        result["warnings"].append(f"Imputed {null_cells - null_pks} missing attribute cell(s) with domain defaults.")
+
+    # 5. Run sanitization & cleaning
+    cleaned_df = clean_dataset(target_table, raw_df, reference_data=reference_data)
+    result["summary"]["clean_rows"] = len(cleaned_df)
+    result["summary"]["dropped_rows"] = len(raw_df) - len(cleaned_df)
+
+    if cleaned_df.empty:
+        result["errors"].append(
+            "No valid records remained after primary-key, date, and foreign-key validation."
+        )
+        return result
+
+    if result["summary"]["dropped_rows"] > (null_pks + dup_pks):
+        fk_dropped = result["summary"]["dropped_rows"] - (null_pks + dup_pks)
+        result["warnings"].append(
+            f"Filtered out {fk_dropped} record(s) due to unmatched foreign key references."
+        )
+
+    result["is_valid"] = True
+    result["df"] = cleaned_df
+    return result
+

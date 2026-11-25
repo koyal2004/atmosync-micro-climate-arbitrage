@@ -6,13 +6,95 @@ Includes robust connection pooling/handling, schema initialization, referential 
 
 import sqlite3
 import logging
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Generator
+from typing import Dict, Any, Optional, List, Generator, Tuple
 import pandas as pd
 from config.settings import DB_PATH
 
 logger = logging.getLogger("atmosync.database")
+
+# ---------------------------------------------------------------------------
+# Thread-Safe In-Memory Table Cache (Invalidated on Writes)
+# ---------------------------------------------------------------------------
+_CACHE_LOCK = threading.RLock()
+_TABLE_CACHE: Dict[Tuple[str, str, Optional[int]], Tuple[float, pd.DataFrame]] = {}
+_CACHE_TTL_SECONDS = 30.0
+
+
+def invalidate_table_cache(table_name: Optional[str] = None, db_path: Optional[Path] = None):
+    """Invalidate cached table DataFrames on any write, update, or schema reset."""
+    target_str = str(Path(db_path).resolve()) if db_path else str(DB_PATH.resolve())
+    with _CACHE_LOCK:
+        if table_name is None:
+            keys_to_del = [k for k in _TABLE_CACHE if k[0] == target_str]
+        else:
+            keys_to_del = [k for k in _TABLE_CACHE if k[0] == target_str and k[1] == table_name]
+        for k in keys_to_del:
+            _TABLE_CACHE.pop(k, None)
+
+
+# ---------------------------------------------------------------------------
+# Table Schema Registry (Required Columns & Primary Keys)
+# ---------------------------------------------------------------------------
+TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "commodities": {
+        "pk": "commodity_id",
+        "required_cols": [
+            "commodity_id", "commodity_name", "category", "base_price_per_kg",
+            "optimal_temperature", "minimum_temperature", "maximum_temperature",
+            "optimal_humidity", "maximum_humidity", "estimated_shelf_life_days", "sensitivity_level"
+        ],
+    },
+    "markets": {
+        "pk": "market_id",
+        "required_cols": [
+            "market_id", "market_name", "state", "district", "latitude", "longitude",
+            "market_type", "estimated_daily_capacity"
+        ],
+    },
+    "market_prices": {
+        "pk": "price_id",
+        "required_cols": [
+            "price_id", "date", "commodity_id", "market_id", "minimum_price",
+            "maximum_price", "modal_price", "arrival_quantity", "demand_index", "supply_index"
+        ],
+    },
+    "shipments": {
+        "pk": "shipment_id",
+        "required_cols": [
+            "shipment_id", "container_id", "commodity_id", "source_market_id",
+            "destination_market_id", "departure_date", "expected_arrival_date",
+            "quantity_kg", "transport_cost", "distance_km", "shipment_status",
+            "initial_quality_percentage", "estimated_remaining_shelf_life"
+        ],
+    },
+    "sensor_readings": {
+        "pk": "sensor_id",
+        "required_cols": [
+            "sensor_id", "shipment_id", "container_id", "timestamp",
+            "temperature", "humidity", "vibration", "sensor_status"
+        ],
+    },
+    "arbitrage_opportunities": {
+        "pk": "opportunity_id",
+        "required_cols": [
+            "opportunity_id", "shipment_id", "commodity_id", "source_market_id",
+            "destination_market_id", "source_market_price", "destination_market_price",
+            "quantity_kg", "estimated_quality_loss", "transportation_cost", "handling_cost",
+            "gross_price_advantage", "estimated_net_benefit", "recommendation_status"
+        ],
+    },
+    "alerts": {
+        "pk": "alert_id",
+        "required_cols": [
+            "alert_id", "shipment_id", "container_id", "alert_type",
+            "severity", "timestamp", "description", "status"
+        ],
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Custom Database Exceptions
@@ -266,6 +348,7 @@ def init_db(force_reset: bool = False, db_path: Optional[Path] = None):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_shipment ON alerts (shipment_id);")
 
         conn.commit()
+        invalidate_table_cache(db_path=db_path)
         logger.info("AtmoSync SQLite database initialized successfully.")
     except sqlite3.Error as e:
         conn.rollback()
@@ -322,10 +405,21 @@ VALID_TABLE_NAMES = {
     "alerts", "simulation_settings"
 }
 
-def load_table(table_name: str, limit: Optional[int] = None, db_path: Optional[Path] = None) -> pd.DataFrame:
-    """Load a SQLite table into a Pandas DataFrame with validation and error handling."""
+def load_table(table_name: str, limit: Optional[int] = None, db_path: Optional[Path] = None, use_cache: bool = True) -> pd.DataFrame:
+    """Load a SQLite table into a Pandas DataFrame with caching, validation, and error handling."""
     if table_name not in VALID_TABLE_NAMES:
         raise TableNotFoundError(f"Invalid or unauthorized table name '{table_name}'. Must be one of {VALID_TABLE_NAMES}")
+
+    target_str = str(Path(db_path).resolve()) if db_path else str(DB_PATH.resolve())
+    cache_key = (target_str, table_name, int(limit) if limit and limit > 0 else None)
+
+    if use_cache:
+        with _CACHE_LOCK:
+            cached = _TABLE_CACHE.get(cache_key)
+            if cached is not None:
+                ts, cached_df = cached
+                if (time.monotonic() - ts) < _CACHE_TTL_SECONDS:
+                    return cached_df.copy()
 
     try:
         with get_db_connection(db_path) as conn:
@@ -333,10 +427,14 @@ def load_table(table_name: str, limit: Optional[int] = None, db_path: Optional[P
             if limit and limit > 0:
                 query += f" LIMIT {int(limit)}"
             df = pd.read_sql_query(query, conn)
+            if use_cache:
+                with _CACHE_LOCK:
+                    _TABLE_CACHE[cache_key] = (time.monotonic(), df.copy())
             return df
     except Exception as e:
         logger.error(f"Error loading table '{table_name}': {e}")
         raise DatabaseQueryError(f"Failed to load table '{table_name}': {e}") from e
+
 
 def execute_query(query: str, params: tuple = (), db_path: Optional[Path] = None) -> pd.DataFrame:
     """Execute arbitrary SQL query safely with parameter binding and return DataFrame."""
@@ -348,9 +446,10 @@ def execute_query(query: str, params: tuple = (), db_path: Optional[Path] = None
         logger.error(f"Error executing query '{query}': {e}")
         raise DatabaseQueryError(f"Query execution failed: {e}") from e
 
+
 def save_dataframe_to_db(df: pd.DataFrame, table_name: str, if_exists: str = "append", db_path: Optional[Path] = None):
     """
-    Write DataFrame into a SQLite table safely.
+    Write DataFrame into a SQLite table safely while preserving schema constraints (PK, FK, indexes).
     Ensures 'is_synthetic' column is present to fulfill dataset provenance requirements.
     """
     if table_name not in VALID_TABLE_NAMES:
@@ -366,12 +465,140 @@ def save_dataframe_to_db(df: pd.DataFrame, table_name: str, if_exists: str = "ap
 
     try:
         with get_db_connection(db_path) as conn:
-            df_to_save.to_sql(table_name, conn, if_exists=if_exists, index=False)
+            if if_exists == "replace":
+                # Preserve existing table schema (PK, FK, indexes) by truncating rows
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA foreign_keys = OFF;")
+                cursor.execute(f"DELETE FROM {table_name};")
+                df_to_save.to_sql(table_name, conn, if_exists="append", index=False)
+                cursor.execute("PRAGMA foreign_keys = ON;")
+            else:
+                df_to_save.to_sql(table_name, conn, if_exists=if_exists, index=False)
             conn.commit()
+            invalidate_table_cache(table_name=table_name, db_path=db_path)
             logger.info(f"Saved {len(df_to_save)} records to table '{table_name}' ({if_exists}).")
     except Exception as e:
         logger.error(f"Failed to save DataFrame to table '{table_name}': {e}")
         raise DatabaseQueryError(f"Failed to persist data to '{table_name}': {e}") from e
+
+
+def safe_import_dataframe(
+    df: pd.DataFrame,
+    table_name: str,
+    mode: str = "skip_duplicates",
+    db_path: Optional[Path] = None
+) -> Dict[str, Any]:
+    """
+    Safely imports a validated DataFrame into an existing SQLite table.
+    Prevents duplicate primary keys and handles IntegrityErrors gracefully without crashing.
+    """
+    if table_name not in TABLE_SCHEMAS:
+        raise TableNotFoundError(f"Table '{table_name}' is not supported for structured import.")
+
+    if df is None or df.empty:
+        return {"status": "skipped", "inserted": 0, "skipped_duplicates": 0, "message": "Empty DataFrame provided."}
+
+    schema = TABLE_SCHEMAS[table_name]
+    pk = schema["pk"]
+    allowed_cols = schema["required_cols"] + ["is_synthetic"]
+
+    df_clean = df.copy()
+    if "is_synthetic" not in df_clean.columns:
+        df_clean["is_synthetic"] = 1
+
+    # Retain only valid schema columns in order
+    present_cols = [c for c in allowed_cols if c in df_clean.columns]
+    missing_cols = [c for c in schema["required_cols"] if c not in df_clean.columns]
+    if missing_cols:
+        return {
+            "status": "error",
+            "inserted": 0,
+            "skipped_duplicates": 0,
+            "message": f"Missing required columns for '{table_name}': {', '.join(missing_cols)}"
+        }
+
+    df_clean = df_clean[present_cols].drop_duplicates(subset=[pk], keep="first")
+
+    try:
+        with get_db_connection(db_path) as conn:
+            existing_pks = set(
+                pd.read_sql_query(f"SELECT {pk} FROM {table_name}", conn)[pk].astype(str).tolist()
+            )
+            incoming_pks = df_clean[pk].astype(str)
+            dup_mask = incoming_pks.isin(existing_pks)
+            skipped_count = int(dup_mask.sum())
+
+            if mode == "skip_duplicates":
+                to_insert = df_clean[~dup_mask]
+            else:
+                # Upsert: delete matching existing keys first, then append
+                if skipped_count > 0:
+                    dup_ids = incoming_pks[dup_mask].tolist()
+                    placeholders = ",".join(["?"] * len(dup_ids))
+                    conn.execute(f"DELETE FROM {table_name} WHERE {pk} IN ({placeholders})", dup_ids)
+                to_insert = df_clean
+
+            if not to_insert.empty:
+                to_insert.to_sql(table_name, conn, if_exists="append", index=False)
+                conn.commit()
+                invalidate_table_cache(table_name=table_name, db_path=db_path)
+
+            inserted_count = len(to_insert)
+            return {
+                "status": "success",
+                "inserted": inserted_count,
+                "skipped_duplicates": skipped_count if mode == "skip_duplicates" else 0,
+                "updated": skipped_count if mode != "skip_duplicates" else 0,
+                "message": f"Imported {inserted_count} record(s) into '{table_name}'."
+            }
+    except sqlite3.IntegrityError as e:
+        logger.warning(f"Foreign key or constraint violation during import into '{table_name}': {e}")
+        return {
+            "status": "error",
+            "inserted": 0,
+            "skipped_duplicates": 0,
+            "message": f"Referential integrity check failed (unmatched foreign key): {e}"
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error importing into '{table_name}': {e}")
+        return {
+            "status": "error",
+            "inserted": 0,
+            "skipped_duplicates": 0,
+            "message": f"Import failed: {e}"
+        }
+
+
+def check_database_health(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Perform a comprehensive SQLite health, integrity, and schema check."""
+    target_path = Path(db_path) if db_path else DB_PATH
+    health = {
+        "exists": target_path.exists(),
+        "integrity_ok": False,
+        "foreign_keys_enabled": False,
+        "missing_tables": [],
+        "counts": {}
+    }
+    if not target_path.exists():
+        return health
+    try:
+        with get_db_connection(target_path) as conn:
+            cursor = conn.cursor()
+            integ = cursor.execute("PRAGMA integrity_check;").fetchone()[0]
+            health["integrity_ok"] = (str(integ).lower() == "ok")
+            fk = cursor.execute("PRAGMA foreign_keys;").fetchone()[0]
+            health["foreign_keys_enabled"] = (fk == 1)
+
+            existing_tables = {
+                r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+            }
+            expected = set(TABLE_SCHEMAS.keys())
+            health["missing_tables"] = sorted(list(expected - existing_tables))
+            health["counts"] = get_record_counts(target_path)
+    except Exception as e:
+        health["error"] = str(e)
+    return health
+
 
 # ---------------------------------------------------------------------------
 # Alert CRUD Operations
@@ -392,17 +619,22 @@ def get_alerts(status_filter: Optional[str] = None, db_path: Optional[Path] = No
         logger.error(f"Failed to fetch alerts: {e}")
         raise DatabaseQueryError(f"Failed to fetch alerts: {e}") from e
 
+
 def update_alert_status(alert_id: str, new_status: str, db_path: Optional[Path] = None):
     """Update status of an alert (e.g., Acknowledged or Resolved)."""
+    if new_status not in {"New", "Acknowledged", "Resolved"}:
+        raise ValueError(f"Invalid alert status '{new_status}'.")
     try:
         with transaction(db_path=db_path) as cursor:
             cursor.execute("UPDATE alerts SET status = ? WHERE alert_id = ?", (new_status, alert_id))
+        invalidate_table_cache(table_name="alerts", db_path=db_path)
     except sqlite3.Error as e:
         logger.error(f"Failed to update alert '{alert_id}' status to '{new_status}': {e}")
         raise DatabaseQueryError(f"Failed to update alert status: {e}") from e
 
+
 def insert_alert(alert_dict: Dict[str, Any], db_path: Optional[Path] = None):
-    """Insert a single alert record."""
+    """Insert a single alert record safely."""
     item = dict(alert_dict)
     if "is_synthetic" not in item:
         item["is_synthetic"] = 1
@@ -413,6 +645,7 @@ def insert_alert(alert_dict: Dict[str, Any], db_path: Optional[Path] = None):
                 INSERT INTO alerts (alert_id, shipment_id, container_id, alert_type, severity, timestamp, description, status, is_synthetic)
                 VALUES (:alert_id, :shipment_id, :container_id, :alert_type, :severity, :timestamp, :description, :status, :is_synthetic)
             """, item)
+        invalidate_table_cache(table_name="alerts", db_path=db_path)
     except sqlite3.Error as e:
         logger.error(f"Failed to insert alert: {e}")
         raise DatabaseQueryError(f"Failed to insert alert: {e}") from e

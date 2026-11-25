@@ -17,12 +17,13 @@ from pathlib import Path
 from config.settings import PERSISTENT_DISCLAIMER, COLORS, DATASET_LABEL, DB_PATH
 from database.database import (
     load_table, get_record_counts, init_db, save_dataframe_to_db,
-    is_database_populated, execute_query
+    is_database_populated, execute_query, safe_import_dataframe, TABLE_SCHEMAS
 )
 from modules.data_generator import generate_all_datasets
 from modules.data_cleaning import (
     run_comprehensive_validation, get_data_quality_dataframe,
-    clean_and_preprocess_all, validate_cross_table_relationships
+    clean_and_preprocess_all, validate_cross_table_relationships,
+    validate_uploaded_csv
 )
 from modules.risk_engine import calculate_shipment_risk, get_risk_summary
 from modules.arbitrage_engine import evaluate_arbitrage_opportunities
@@ -168,6 +169,53 @@ def render():
                     save_dataframe_to_db(c_df, t_name, if_exists="replace")
                 st.success("✅ Dataset sanitization and preprocessing complete: 100% integrity verified and persisted!")
                 st.rerun()
+
+    with st.expander("📤 Upload & Validate External CSV Dataset (Safe Import)", expanded=False):
+        st.caption("Upload a CSV file for schema validation, sanitization, and duplicate-safe import into SQLite.")
+        up_c1, up_c2 = st.columns([1.2, 1.8])
+        with up_c1:
+            target_tbl = st.selectbox(
+                "Target Database Table:",
+                list(TABLE_SCHEMAS.keys()),
+                index=0,
+                key="csv_upload_target_tbl"
+            )
+            import_mode = st.radio(
+                "Duplicate Key Handling:",
+                ["skip_duplicates", "upsert"],
+                format_func=lambda m: "Skip Existing Primary Keys" if m == "skip_duplicates" else "Update / Upsert Existing Keys",
+                key="csv_upload_mode"
+            )
+        with up_c2:
+            req_cols = TABLE_SCHEMAS[target_tbl]["required_cols"]
+            st.markdown(f"**Required Columns (`{target_tbl}`):** `{', '.join(req_cols)}`")
+            uploaded_csv = st.file_uploader(
+                "Select CSV File to Validate & Import",
+                type=["csv"],
+                key="csv_file_uploader"
+            )
+
+        if uploaded_csv is not None:
+            validation_res = validate_uploaded_csv(uploaded_csv, target_tbl, reference_data=datasets)
+            for warn_msg in validation_res["warnings"]:
+                st.warning(f"⚠️ {warn_msg}")
+            for err_msg in validation_res["errors"]:
+                st.error(f"❌ {err_msg}")
+
+            if validation_res["is_valid"]:
+                clean_preview = validation_res["df"]
+                st.success(
+                    f"✅ CSV validation passed: {len(clean_preview):,} valid record(s) ready for import "
+                    f"(from {validation_res['summary']['raw_rows']:,} raw rows)."
+                )
+                st.dataframe(clean_preview.head(10), use_container_width=True)
+                if st.button("💾 Confirm Safe Import to SQLite", key="btn_confirm_csv_import", type="primary"):
+                    imp_res = safe_import_dataframe(clean_preview, target_tbl, mode=import_mode)
+                    if imp_res["status"] == "success":
+                        st.success(f"✅ {imp_res['message']} (Skipped duplicates: {imp_res.get('skipped_duplicates', 0)})")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {imp_res['message']}")
 
     st.markdown("---")
 
