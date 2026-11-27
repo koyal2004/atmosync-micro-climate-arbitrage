@@ -3,9 +3,36 @@ AtmoSync - Helper Utilities
 Formatting, Haversine geospatial calculations, and UI helper components.
 """
 
+import logging
 import math
+import re
 from datetime import datetime
 from typing import Union, Optional
+
+_helpers_logger = logging.getLogger("atmosync.helpers")
+
+
+def sanitize_error_message(err: Union[Exception, str], user_context: str = "Operation failed") -> str:
+    """
+    Return a safe, user-facing error message without exposing internal filesystem paths,
+    credentials, or sensitive tokens.
+    """
+    raw = str(err or "").strip()
+    # Mask Windows drive paths (e.g., C:\Users\Admin\...) and Unix root paths
+    redacted = re.sub(r"[A-Za-z]:\\[^\s'\"]+", "<local-path>", raw)
+    redacted = re.sub(r"/(?:home|Users|var|etc|opt|tmp)/[^\s'\"]+", "<local-path>", redacted)
+    # Mask key/token/password assignments if ever present
+    redacted = re.sub(
+        r"(?i)(api[_-]?key|secret|password|token|bearer)\s*[:=]\s*\S+",
+        r"\1=<redacted>",
+        redacted,
+    )
+    _helpers_logger.error("%s: %s", user_context, redacted)
+    if not redacted:
+        return f"{user_context}. Please verify your data or configuration and try again."
+    # Keep message concise and safe
+    short_detail = redacted.splitlines()[0][:180]
+    return f"{user_context}: {short_detail}"
 
 def format_currency(value: Union[int, float], symbol: str = "₹") -> str:
     """Format numbers as Indian Rupee amounts with comma separators."""

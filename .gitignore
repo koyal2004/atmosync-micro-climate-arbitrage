@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -222,6 +224,8 @@ __marimo__/
 # AtmoSync Local SQLite Database & Generated Exports
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 database/*.db
 data/exports/*
 !data/exports/.gitkeep

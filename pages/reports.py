@@ -30,14 +30,14 @@ from modules.arbitrage_engine import evaluate_arbitrage_opportunities
 from utils.export import (
     create_datasets_zip, create_excel_workbook, generate_pdf_report, build_filtered_report
 )
-from utils.helpers import render_kpi_card
+from utils.helpers import render_kpi_card, sanitize_error_message
 
 
 def get_database_diagnostics() -> dict:
-    """Retrieve database health, file size, and SQLite PRAGMA settings."""
+    """Retrieve database health, file size, and SQLite PRAGMA settings without exposing full OS paths."""
     diag = {
         "exists": DB_PATH.exists(),
-        "path": str(DB_PATH),
+        "path": f"database/{DB_PATH.name}",
         "size_kb": 0.0,
         "integrity": "Unknown",
         "journal_mode": "Unknown",
@@ -53,7 +53,7 @@ def get_database_diagnostics() -> dict:
             fk_df = execute_query("PRAGMA foreign_keys;")
             diag["foreign_keys"] = "ENABLED (1)" if (not fk_df.empty and fk_df.iloc[0, 0] == 1) else "OFF (0)"
         except Exception as e:
-            diag["integrity"] = f"Check Failed: {e}"
+            diag["integrity"] = sanitize_error_message(e, "Check Failed")
     return diag
 
 

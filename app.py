@@ -33,10 +33,11 @@ import pandas as pd
 try:
     from config.settings import (
         APP_NAME, APP_SUBTITLE, TAGLINE, APP_VERSION,
-        PERSISTENT_DISCLAIMER, COLORS, ASSETS_DIR
+        PERSISTENT_DISCLAIMER, COLORS, ASSETS_DIR, LOG_LEVEL
     )
+    logging.getLogger().setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 except ImportError as e:
-    st.error(f"⚠️ Configuration module failed to load: {e}")
+    st.error("⚠️ Configuration module failed to load. Please verify repository setup.")
     st.stop()
 
 try:
@@ -55,9 +56,9 @@ except ImportError as e:
     st.stop()
 
 try:
-    from utils.helpers import get_status_badge
+    from utils.helpers import get_status_badge, sanitize_error_message
 except ImportError as e:
-    st.error(f"⚠️ Utility helpers module failed to load: {e}")
+    st.error("⚠️ Utility helpers module failed to load. Please verify installation.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -150,8 +151,8 @@ def initialize_database():
                     save_dataframe_to_db(t_df, t_name, if_exists="append")
                 logger.info("Database initialized and populated successfully.")
     except Exception as e:
-        st.error(f"⚠️ Database initialization failed: {e}")
-        logger.error(f"Database initialization error: {e}", exc_info=True)
+        st.error(f"⚠️ {sanitize_error_message(e, 'Database initialization failed')}")
+        logger.error("Database initialization error occurred.", exc_info=True)
         st.info("The application will continue but some features may be unavailable.")
 
 initialize_database()
